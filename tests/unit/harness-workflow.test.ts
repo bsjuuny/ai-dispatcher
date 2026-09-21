@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -85,6 +85,7 @@ describe('HarnessWorkflow', () => {
     expect(git(join(worktrees, result.id, 'integration'), ['branch', '--show-current'])).toBe(`ai/${result.id}/integration`);
     expect(git(join(worktrees, result.id, 'integration'), ['show', 'HEAD:feature.txt'])).toBe('implemented');
     expect(telemetry.summary(result.id)).toMatchObject({ codexCalls: 1, jevCalls: 1 });
+    expect(readFileSync(join(repo, '.ai-harness', 'artifacts', result.id, 'plan.json'), 'utf8')).not.toContain('Fix typo');
     state.close();
   });
 });

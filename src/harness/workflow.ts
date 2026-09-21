@@ -77,10 +77,11 @@ export class HarnessWorkflow {
             repositoryContext: specialistContext,
           })
         : singleTaskPlan(requirement, route.risk);
-      artifacts.writeJson(taskId, 'plan', plan);
+      const persistedPlan = persistentPlan(plan, route.needArchitect);
+      artifacts.writeJson(taskId, 'plan', persistedPlan);
       tasks.enterPhase(taskId, 'DAG_CREATED');
-      artifacts.writeJson(taskId, 'dag', plan.tasks);
-      tasks.recordMetadata(taskId, { dag: plan.tasks });
+      artifacts.writeJson(taskId, 'dag', persistedPlan.tasks);
+      tasks.recordMetadata(taskId, { dag: persistedPlan.tasks });
 
       const subtaskWorktrees = new Map<string, SubtaskWorktree>();
       tasks.enterPhase(taskId, 'CODEX_IMPLEMENT');
@@ -104,7 +105,7 @@ export class HarnessWorkflow {
           const merged = await this.deps.git.mergeSubtask(taskWorktree, worktree);
           if (merged.status === 'CONFLICT') throw new DispatcherError({ code: 'GIT_COMMAND_FAILED', message: `Merge conflict for ${dagTask.id}; automatic conflict resolution was not attempted.`, retryable: false, taskId });
         },
-        onUpdate: (snapshot) => tasks.recordMetadata(taskId, { dag: snapshot }),
+        onUpdate: (snapshot) => tasks.recordMetadata(taskId, { dag: route.needArchitect ? snapshot : snapshot.map(redactDirectTask) }),
       });
       if (!pool.succeeded) throw new DispatcherError({ code: 'AGENT_FAILED', message: 'One or more Codex DAG tasks failed.', retryable: true, taskId });
       tasks.recordMetadata(taskId, { maxParallelObserved: pool.maxParallelObserved });
@@ -255,6 +256,18 @@ function singleTaskPlan(requirement: string, risk: JevRouteDecision['risk']): Ar
     risks: [],
     testStrategy: ['Run configured deterministic quality commands.'],
     tasks: [{ id: 'T1', title: titleFromRequirement(requirement), description: requirement.slice(0, 8_000), dependencies: [], worker: 'codex', files: [], risk }],
+  };
+}
+
+function persistentPlan(plan: ArchitectPlan, architectGenerated: boolean): ArchitectPlan {
+  return architectGenerated ? plan : { ...plan, tasks: plan.tasks.map(redactDirectTask) };
+}
+
+function redactDirectTask<T extends { title: string; description: string }>(task: T): T {
+  return {
+    ...task,
+    title: 'Direct implementation task',
+    description: 'Direct task instructions were delivered to the agent and are not persisted.',
   };
 }
 
