@@ -54,8 +54,22 @@ export class HarnessWorkflow {
 
   async resume(taskId: string): Promise<HarnessTaskRecord> {
     const task = this.deps.tasks.get(taskId);
-    if (task.status === 'COMPLETED' || task.status === 'ABORTED' || task.phase === 'WAITING_HUMAN') return task;
+    if (task.status === 'COMPLETED' || task.status === 'ABORTED') return task;
     const delivery = parseDelivery(task.metadata);
+    if (task.phase === 'WAITING_HUMAN') {
+      if (!delivery || !task.metadata['pullRequest'] || !task.metadata['mergeIntent']) return task;
+      const lease = this.deps.workflowLeases.acquire(taskId);
+      try {
+        const github = this.deps.githubFactory(delivery.integrationPath);
+        const pullRequest = await github.verifiedPullRequest(delivery.branch, delivery.revision, delivery.baseBranch);
+        if (pullRequest.state !== 'MERGED') return task;
+        this.deps.tasks.recordMetadata(taskId, { pullRequest, delivery: { ...delivery, state: 'MERGED' } });
+        this.deps.log.append(taskId, 'resume.merge-confirmed', { revision: delivery.revision });
+        return this.deps.tasks.finishAfterVerifiedMerge(taskId);
+      } finally {
+        this.deps.workflowLeases.release(lease);
+      }
+    }
     if (!delivery) {
       const envelope = task.metadata['resumeEnvelope'];
       if (typeof envelope !== 'string') {
@@ -279,6 +293,11 @@ export class HarnessWorkflow {
       return await this.waitForCi(taskId, taskWorktree.integrationBranch, github, false);
     } catch (cause) {
       const code = isDispatcherError(cause) ? cause.code : 'INTERNAL_LOGIC_ERROR';
+      const current = tasks.get(taskId);
+      if (current.status === 'ABORTED') {
+        this.deps.log.append(taskId, 'workflow.aborted');
+        return current;
+      }
       if (code === 'AGENT_BLOCKED') return tasks.block(taskId, code);
       if (code === 'BUDGET_EXCEEDED') return tasks.block(taskId, code, true);
       if (code === 'CI_CHECK_PENDING' && tasks.get(taskId).phase === 'CI_WAIT') return tasks.wait(taskId, code);

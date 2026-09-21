@@ -241,7 +241,13 @@ function parseNameStatus(output: string): Array<{ status: string; path: string }
   for (let index = 0; index < parts.length;) {
     const status = parts[index++]!;
     const path = parts[index++] ?? '';
-    if (status.startsWith('R') || status.startsWith('C')) {
+    if (status.startsWith('R')) {
+      const destination = parts[index++] ?? path;
+      result.push(
+        { status: 'D', path: normalizeRepoPath(path) },
+        { status: 'A', path: normalizeRepoPath(destination) },
+      );
+    } else if (status.startsWith('C')) {
       const destination = parts[index++] ?? path;
       result.push({ status, path: normalizeRepoPath(destination) });
     } else {

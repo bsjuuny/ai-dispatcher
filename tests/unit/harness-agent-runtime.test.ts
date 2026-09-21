@@ -28,6 +28,22 @@ describe('HerdrAgentRuntime', () => {
     expect(herdr.createWorkspace).not.toHaveBeenCalled();
   });
 
+  it('waits for an already-running restored agent without sending its prompt twice', async () => {
+    const herdr = {
+      findAgent: vi.fn().mockResolvedValue({ name: 'codex-1', paneId: 'w7:p3', state: 'working', raw: {} }),
+      wait: vi.fn().mockResolvedValue({ name: 'codex-1', paneId: 'w7:p3', state: 'done', raw: {} }),
+      createWorkspace: vi.fn(),
+      startAgent: vi.fn(),
+      prompt: vi.fn(),
+      readAgent: vi.fn().mockResolvedValue('completed original work'),
+    } as unknown as HerdrAdapter;
+    await expect(new HerdrAgentRuntime(herdr).run({
+      name: 'codex-1', kind: 'codex', workingDirectory: 'C:/repo', prompt: 'do not repeat', timeoutMs: 1000,
+    })).resolves.toMatchObject({ state: 'done', output: 'completed original work' });
+    expect(herdr.wait).toHaveBeenCalledOnce();
+    expect(herdr.prompt).not.toHaveBeenCalled();
+  });
+
   it.each(['working', 'unknown'] as const)('fails closed when Herdr returns nonterminal state %s', async (state) => {
     await expect(runtime(state).run({
       name: 'codex-1', kind: 'codex', workingDirectory: 'C:/repo', prompt: 'task', timeoutMs: 1000,

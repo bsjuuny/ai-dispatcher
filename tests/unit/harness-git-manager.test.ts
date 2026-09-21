@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -75,6 +75,19 @@ describe('HarnessGitManager', () => {
     const unrelated = await manager.createSubtaskWorktree(task, 'SCOPE');
     writeFileSync(join(unrelated.path, 'other.txt'), 'unexpected\n');
     await expect(manager.commitSubtask(unrelated, 'bad', ['app.txt'])).rejects.toMatchObject({ code: 'SAFETY_POLICY_VIOLATION' });
+  });
+
+  it('treats a rename as deletion plus addition so test and ownership checks cannot be bypassed', async () => {
+    const test = fixture();
+    writeFileSync(join(test.repo, 'legacy.test.ts'), 'test("works", () => {})\n');
+    git(test.repo, ['add', 'legacy.test.ts']);
+    git(test.repo, ['commit', '-m', 'add legacy test']);
+    const manager = new HarnessGitManager(test.repo, test.worktrees);
+    const task = await manager.createTaskWorktree('TASK-012', 'master');
+    const renamed = await manager.createSubtaskWorktree(task, 'RENAME');
+    renameSync(join(renamed.path, 'legacy.test.ts'), join(renamed.path, 'app.txt'));
+    await expect(manager.commitSubtask(renamed, 'bad', ['app.txt']))
+      .rejects.toMatchObject({ code: 'SAFETY_POLICY_VIOLATION' });
   });
 
   it('rechecks remediation changes in the integration worktree before final commit', async () => {

@@ -56,6 +56,24 @@ describe('HarnessTaskManager', () => {
     expect(() => tasks.finish(task.id)).toThrow(/WAITING_HUMAN/);
   });
 
+  it('does not let a late workflow failure overwrite an explicit abort', () => {
+    const task = tasks.create('Implement feature', 'C:/repo');
+    tasks.enterPhase(task.id, 'CODEX_IMPLEMENT');
+    const aborted = tasks.abort(task.id);
+    expect(tasks.fail(task.id, 'PROCESS_EXIT_ERROR')).toEqual(aborted);
+    expect(tasks.block(task.id, 'AGENT_BLOCKED')).toEqual(aborted);
+    expect(tasks.wait(task.id, 'CI_CHECK_PENDING')).toEqual(aborted);
+    expect(tasks.get(task.id)).toMatchObject({ status: 'ABORTED', phase: 'ABORTED' });
+  });
+
+  it('records merge intent only at the explicit human gate', () => {
+    const task = tasks.create('Implement feature', 'C:/repo');
+    expect(() => tasks.requestMerge(task.id, 'abc123')).toThrow(/not ready/);
+    tasks.recordMetadata(task.id, { pullRequest: { number: 7 } });
+    tasks.enterPhase(task.id, 'WAITING_HUMAN', { status: 'WAITING' });
+    expect(tasks.requestMerge(task.id, 'abc123').metadata['mergeIntent']).toMatchObject({ revision: 'abc123' });
+  });
+
   it('preserves an exhausted retry failure instead of rewriting it as blocked', () => {
     const task = tasks.create('Implement feature', 'C:/repo');
     tasks.retry(task.id);

@@ -137,8 +137,24 @@ export class HarnessTaskManager {
     return this.enterPhase(taskId, 'DONE', { status: 'COMPLETED' });
   }
 
+  requestMerge(taskId: string, revision: string): HarnessTaskRecord {
+    const current = this.get(taskId);
+    if (current.phase !== 'WAITING_HUMAN' || current.status !== 'WAITING' || !current.metadata['pullRequest']) {
+      throw new DispatcherError({
+        code: 'HUMAN_APPROVAL_REQUIRED',
+        message: `${taskId} is not ready for an explicit pull-request merge.`,
+        retryable: false,
+        taskId,
+      });
+    }
+    return this.recordMetadata(taskId, {
+      mergeIntent: { revision, requestedAt: this.now().toISOString() },
+    });
+  }
+
   fail(taskId: string, errorCode: string): HarnessTaskRecord {
     const current = this.get(taskId);
+    if (TERMINAL_STATUSES.has(current.status)) return current;
     const updatedAt = this.now().toISOString();
     return this.store.update(
       taskId,
@@ -149,7 +165,7 @@ export class HarnessTaskManager {
 
   block(taskId: string, errorCode: string, budget = false): HarnessTaskRecord {
     const current = this.get(taskId);
-    if (current.status === 'FAILED') return current;
+    if (current.status === 'FAILED' || TERMINAL_STATUSES.has(current.status)) return current;
     return this.store.update(taskId, {
       status: budget ? 'BUDGET_BLOCKED' : 'BLOCKED',
       updatedAt: this.now().toISOString(),
@@ -176,6 +192,7 @@ export class HarnessTaskManager {
 
   wait(taskId: string, errorCode?: string): HarnessTaskRecord {
     const current = this.get(taskId);
+    if (TERMINAL_STATUSES.has(current.status)) return current;
     return this.store.update(taskId, {
       status: 'WAITING',
       updatedAt: this.now().toISOString(),

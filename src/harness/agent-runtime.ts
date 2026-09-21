@@ -29,10 +29,11 @@ export class HerdrAgentRuntime implements AgentRuntime {
   async run(request: HarnessAgentRequest): Promise<HarnessAgentResult> {
     const existing = await this.herdr.findAgent(request.workingDirectory, request.name);
     if (existing) {
-      const settled = existing.state === 'working'
-        ? await this.herdr.wait(request.workingDirectory, request.name, request.timeoutMs)
-        : existing;
-      return this.promptSettled(request, settled, existing.paneId ?? 'restored');
+      if (existing.state === 'working') {
+        const settled = await this.herdr.wait(request.workingDirectory, request.name, request.timeoutMs);
+        return this.readSettled(request, settled, existing.paneId ?? 'restored');
+      }
+      return this.promptSettled(request, existing, existing.paneId ?? 'restored');
     }
     const workspace = await this.herdr.createWorkspace(request.workingDirectory, request.name);
     await this.herdr.startAgent(request.workingDirectory, {
@@ -63,7 +64,15 @@ export class HerdrAgentRuntime implements AgentRuntime {
       request.prompt,
       request.timeoutMs,
     );
-    const output = await this.herdr.readAgent(request.workingDirectory, request.name);
+    return this.readSettled(request, settled, paneId, workspaceId);
+  }
+
+  private async readSettled(
+    request: HarnessAgentRequest,
+    settled: Awaited<ReturnType<HerdrAdapter['getAgent']>>,
+    paneId: string,
+    workspaceId = paneId.includes(':p') ? paneId.split(':p', 1)[0]! : 'restored',
+  ): Promise<HarnessAgentResult> {
     if (settled.state === 'blocked') {
       throw new DispatcherError({
         code: 'AGENT_BLOCKED',
@@ -85,6 +94,7 @@ export class HerdrAgentRuntime implements AgentRuntime {
         retryable: true,
       });
     }
+    const output = await this.herdr.readAgent(request.workingDirectory, request.name);
     return {
       name: request.name,
       state: settled.state,

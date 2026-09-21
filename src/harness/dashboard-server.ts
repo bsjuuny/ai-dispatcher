@@ -121,6 +121,7 @@ async function route(
     if (!validMutation(request, csrfToken)) return json(response, 403, { error: 'invalid dashboard mutation request' });
     const task = ctx.tasks.get(mergeMatch[1]!);
     const delivery = deliveryMetadata(task.metadata);
+    ctx.tasks.requestMerge(task.id, delivery.revision);
     await new GitHubManager(delivery.integrationPath).mergeAfterHumanApproval(task.id, delivery.branch, delivery.revision, delivery.baseBranch);
     return json(response, 200, ctx.tasks.finishAfterVerifiedMerge(task.id));
   }

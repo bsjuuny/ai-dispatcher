@@ -36,24 +36,27 @@ describe('GitHubManager', () => {
   });
 
   it('requires all CI checks to pass before an explicit merge', async () => {
-    const execute = vi.fn().mockResolvedValueOnce(ok(JSON.stringify([
-      { name: 'build', state: 'SUCCESS', bucket: 'pass', link: 'https://ci/build' },
-      { name: 'test', state: 'PENDING', bucket: 'pending', link: 'https://ci/test' },
-    ])));
+    const execute = vi.fn()
+      .mockResolvedValueOnce(ok(JSON.stringify({ number: 7, url: 'https://github.test/pr/7', state: 'OPEN', headRefName: 'ai/TASK-001/integration', baseRefName: 'main', headRefOid: 'abc123' })))
+      .mockResolvedValueOnce(ok(JSON.stringify([
+        { name: 'build', state: 'SUCCESS', bucket: 'pass', link: 'https://ci/build' },
+        { name: 'test', state: 'PENDING', bucket: 'pending', link: 'https://ci/test' },
+      ])));
     const manager = new GitHubManager('C:/repo', execute);
     await expect(manager.mergeAfterHumanApproval('TASK-001', 'ai/TASK-001/integration', 'abc123')).rejects.toMatchObject({ code: 'CI_CHECK_PENDING' });
-    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 
   it('merges only after passing checks and detects protected auto-merge paths', async () => {
     const execute = vi.fn()
+      .mockResolvedValueOnce(ok(JSON.stringify({ number: 7, url: 'https://github.test/pr/7', state: 'OPEN', headRefName: 'ai/TASK-001/integration', baseRefName: 'main', headRefOid: 'abc123' })))
       .mockResolvedValueOnce(ok(JSON.stringify([{ name: 'build', state: 'SUCCESS', bucket: 'pass' }])))
       .mockResolvedValueOnce(ok(JSON.stringify({ number: 7, url: 'https://github.test/pr/7', state: 'OPEN', headRefName: 'ai/TASK-001/integration', baseRefName: 'main', headRefOid: 'abc123' })))
       .mockResolvedValueOnce(ok('merged'))
       .mockResolvedValueOnce(ok(JSON.stringify({ number: 7, url: 'https://github.test/pr/7', state: 'MERGED', headRefName: 'ai/TASK-001/integration', baseRefName: 'main', headRefOid: 'abc123' })));
     const manager = new GitHubManager('C:/repo', execute);
     await manager.mergeAfterHumanApproval('TASK-001', 'ai/TASK-001/integration', 'abc123', 'main');
-    expect(execute).toHaveBeenNthCalledWith(3, expect.objectContaining({ file: 'gh', args: ['pr', 'merge', 'ai/TASK-001/integration', '--merge', '--match-head-commit', 'abc123'] }));
+    expect(execute).toHaveBeenNthCalledWith(4, expect.objectContaining({ file: 'gh', args: ['pr', 'merge', 'ai/TASK-001/integration', '--merge', '--match-head-commit', 'abc123'] }));
     expect(GitHubManager.permitsAutoMerge(['src/a.ts'], ['auth/**'])).toBe(true);
     expect(GitHubManager.permitsAutoMerge(['auth/session.ts'], ['auth/**'])).toBe(false);
   });
@@ -85,11 +88,21 @@ describe('GitHubManager', () => {
 
   it('fails closed when the pull request head changed after review', async () => {
     const execute = vi.fn()
-      .mockResolvedValueOnce(ok(JSON.stringify([{ name: 'build', state: 'SUCCESS', bucket: 'pass' }])))
       .mockResolvedValueOnce(ok(JSON.stringify({ number: 7, url: 'https://github.test/pr/7', state: 'OPEN', headRefName: 'ai/TASK-001/integration', baseRefName: 'main', headRefOid: 'changed' })));
     await expect(new GitHubManager('C:/repo', execute).mergeAfterHumanApproval(
       'TASK-001', 'ai/TASK-001/integration', 'reviewed', 'main',
     )).rejects.toMatchObject({ code: 'SAFETY_POLICY_VIOLATION' });
-    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('makes a repeated merge action idempotent when the exact reviewed revision is already merged', async () => {
+    const execute = vi.fn().mockResolvedValueOnce(ok(JSON.stringify({
+      number: 7, url: 'https://github.test/pr/7', state: 'MERGED',
+      headRefName: 'ai/TASK-001/integration', baseRefName: 'main', headRefOid: 'abc123',
+    })));
+    await expect(new GitHubManager('C:/repo', execute).mergeAfterHumanApproval(
+      'TASK-001', 'ai/TASK-001/integration', 'abc123', 'main',
+    )).resolves.toBeUndefined();
+    expect(execute).toHaveBeenCalledOnce();
   });
 });

@@ -96,8 +96,25 @@ export class GitHubManager {
     return parseChecksOutcome(outcome);
   }
 
+  async verifiedPullRequest(branch: string, expectedRevision: string, expectedBase?: string): Promise<PullRequestInfo> {
+    const pullRequest = await this.pullRequest(branch);
+    if (
+      pullRequest.headRefName !== branch ||
+      pullRequest.headRefOid !== expectedRevision ||
+      (expectedBase && pullRequest.baseRefName !== expectedBase)
+    ) {
+      throw error('SAFETY_POLICY_VIOLATION', 'Pull request head, base, or reviewed revision changed after verification.', false);
+    }
+    return pullRequest;
+  }
+
   async mergeAfterHumanApproval(taskId: string, branch: string, expectedRevision: string, expectedBase?: string): Promise<void> {
     this.assertTaskBranch(taskId, branch);
+    const current = await this.verifiedPullRequest(branch, expectedRevision, expectedBase);
+    if (current.state === 'MERGED') return;
+    if (current.state !== 'OPEN') {
+      throw error('SAFETY_POLICY_VIOLATION', `Pull request is not open or already verified as merged: ${current.state}.`, false);
+    }
     const checks = await this.requiredChecks(branch);
     const failed = checks.filter((check) => check.bucket === 'fail' || check.bucket === 'cancel');
     if (failed.length > 0) {
@@ -107,9 +124,9 @@ export class GitHubManager {
     if (pending.length > 0) {
       throw error('CI_CHECK_PENDING', `Required checks are not complete: ${pending.map((check) => check.name).join(', ')}`, true);
     }
-    const pullRequest = await this.pullRequest(branch);
-    if (pullRequest.state !== 'OPEN' || pullRequest.headRefName !== branch || pullRequest.headRefOid !== expectedRevision || (expectedBase && pullRequest.baseRefName !== expectedBase)) {
-      throw error('SAFETY_POLICY_VIOLATION', 'Pull request head, base, state, or reviewed revision changed after verification.', false);
+    const pullRequest = await this.verifiedPullRequest(branch, expectedRevision, expectedBase);
+    if (pullRequest.state !== 'OPEN') {
+      throw error('SAFETY_POLICY_VIOLATION', 'Pull request state changed after CI verification.', false);
     }
     const outcome = await this.command('gh', ['pr', 'merge', branch, '--merge', '--match-head-commit', expectedRevision], 60_000);
     if (outcome.exitCode !== 0) throw error('CI_CHECK_FAILED', outcome.stderr || outcome.stdout, false);

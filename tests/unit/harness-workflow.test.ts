@@ -125,13 +125,13 @@ describe('HarnessWorkflow', () => {
     const tasks = new HarnessTaskManager(state, config.budget.task.max_retries);
     const telemetry = new TelemetryManager(state);
     const router = new JevRouter(unavailableJev, new BudgetManager(config.budget));
-    let resumeChecks = false;
-    const checkExecutor = vi.fn().mockImplementation(async (): Promise<ProcessOutcome> => ({
+    let deliveryMode: 'native' | 'ci' | 'merged' = 'native';
+    const checkExecutor = vi.fn().mockImplementation(async (plan): Promise<ProcessOutcome> => ({
       exitCode: 0,
-      stdout: JSON.stringify([{ name: 'build', state: 'SUCCESS', bucket: 'pass' }]),
-      stderr: '',
-      timedOut: false,
-      durationMs: 1,
+      stdout: deliveryMode === 'merged' && plan.args.includes('view')
+        ? JSON.stringify({ number: 7, url: 'https://github.test/pr/7', state: 'MERGED', headRefName: `ai/${result.id}/integration`, baseRefName: 'master', headRefOid: 'abc123' })
+        : JSON.stringify([{ name: 'build', state: 'SUCCESS', bucket: 'pass' }]),
+      stderr: '', timedOut: false, durationMs: 1,
     }));
     const workflow = new HarnessWorkflow({
       projectRoot: repo,
@@ -144,7 +144,7 @@ describe('HarnessWorkflow', () => {
       quality: new DeterministicQualityGate(),
       artifacts: new ArtifactStore(repo),
       git: new HarnessGitManager(repo, worktrees),
-      githubFactory: (path) => new GitHubManager(path, resumeChecks ? checkExecutor : undefined),
+      githubFactory: (path) => new GitHubManager(path, deliveryMode === 'native' ? undefined : checkExecutor),
       log: new HarnessTaskLog(repo),
       resumeEnvelopes: new ResumeEnvelopeStore(repo),
       workflowLeases: new WorkflowLeaseManager(repo),
@@ -162,7 +162,7 @@ describe('HarnessWorkflow', () => {
     expect(readFileSync(join(repo, '.ai-harness', 'artifacts', result.id, 'plan.json'), 'utf8')).not.toContain('Fix typo');
     expect(JSON.stringify(result.metadata)).not.toContain('Fix typo');
 
-    resumeChecks = true;
+    deliveryMode = 'ci';
     tasks.recordMetadata(result.id, {
       delivery: { branch: `ai/${result.id}/integration`, integrationPath: join(worktrees, result.id, 'integration'), revision: 'abc123', baseBranch: 'master', state: 'PR_CREATED' },
       pullRequest: { number: 7, url: 'https://github.test/pr/7', state: 'OPEN' },
@@ -172,6 +172,12 @@ describe('HarnessWorkflow', () => {
     expect(resumed.phase).toBe('WAITING_HUMAN');
     expect(resumed.metadata['ci']).toEqual([{ name: 'build', state: 'SUCCESS', bucket: 'pass' }]);
     expect(checkExecutor).toHaveBeenCalledOnce();
+
+    tasks.recordMetadata(result.id, { mergeIntent: { revision: 'abc123', requestedAt: new Date().toISOString() } });
+    deliveryMode = 'merged';
+    const recovered = await workflow.resume(result.id);
+    expect(recovered).toMatchObject({ phase: 'DONE', status: 'COMPLETED' });
+    expect(recovered.metadata['delivery']).toMatchObject({ state: 'MERGED', revision: 'abc123' });
     state.close();
   });
 });
