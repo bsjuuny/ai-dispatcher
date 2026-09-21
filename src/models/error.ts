@@ -59,7 +59,11 @@ export type DispatcherErrorCode =
   | 'DAG_INVALID'
   | 'AGENT_OUTPUT_INVALID'
   | 'AGENT_BLOCKED'
-  | 'AGENT_FAILED';
+  | 'AGENT_FAILED'
+  | 'GIT_REPO_MISSING'
+  | 'WORKTREE_CREATE_FAILED'
+  | 'GIT_COMMAND_FAILED'
+  | 'SAFETY_POLICY_VIOLATION';
 
 export type ErrorSeverity = 'info' | 'warning' | 'error' | 'fatal';
 
