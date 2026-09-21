@@ -1,11 +1,9 @@
 import { DispatcherError } from '../../models/error.js';
+import { safeHttpFetch } from '../http-client.js';
 
 /**
- * The ONLY file in this codebase allowed to call the global `fetch()` (enforced by
- * tests/security/local-fetch-single-chokepoint.test.ts, the same static-scan
- * technique as tests/security/dist-static-scan.test.ts uses for process spawning).
- * Every local-runtime HTTP call (Ollama, llama.cpp) reaches the network exclusively
- * through this function.
+ * Every local-runtime HTTP call (Ollama, llama.cpp) reaches the network through
+ * providers/http-client.ts, the source-level global HTTP chokepoint.
  *
  * `assertLoopbackHost` rejects anything that isn't 127.0.0.1/localhost/::1 - a local
  * runtime host is only ever operator-configured (config/schema.ts), never task input,
@@ -55,13 +53,12 @@ export async function localFetch(host: string, path: string, opts: LocalFetchOpt
   const base = assertLoopbackHost(host);
   const url = new URL(path, base);
 
-  let response: Response;
   try {
-    response = await fetch(url, {
+    return await safeHttpFetch(url, {
       method: opts.method ?? 'GET',
-      headers: opts.body !== undefined ? { 'content-type': 'application/json' } : undefined,
-      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-      signal: AbortSignal.timeout(opts.timeoutMs),
+      body: opts.body,
+      timeoutMs: opts.timeoutMs,
+      allowedOrigins: [base.origin],
     });
   } catch (cause) {
     // Verified live (node -e against AbortSignal.timeout(1)): a timeout abort
@@ -77,16 +74,6 @@ export async function localFetch(host: string, path: string, opts: LocalFetchOpt
       retryable: true,
     });
   }
-
-  const text = await response.text();
-  let json: unknown;
-  try {
-    json = text.length > 0 ? JSON.parse(text) : undefined;
-  } catch {
-    json = undefined;
-  }
-
-  return { status: response.status, ok: response.ok, text, json };
 }
 
 /**

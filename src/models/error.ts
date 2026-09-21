@@ -52,7 +52,10 @@ export type DispatcherErrorCode =
   | 'HERDR_COMMAND_FAILED'
   | 'HERDR_RESPONSE_INVALID'
   | 'HERDR_TIMEOUT'
-  | 'HERDR_PROMPT_TOO_LARGE';
+  | 'HERDR_PROMPT_TOO_LARGE'
+  | 'HTTP_TARGET_REJECTED'
+  | 'JEV_API_UNAVAILABLE'
+  | 'JEV_RESPONSE_INVALID';
 
 export type ErrorSeverity = 'info' | 'warning' | 'error' | 'fatal';
 

@@ -8,6 +8,7 @@ describe('HarnessConfig', () => {
     expect(config.budget.task.max_parallel_agents).toBe(3);
     expect(config.budget.codex.max_workers).toBe(3);
     expect(config.herdr.session).toBe('ai-harness');
+    expect(config.jev.api_key_env).toBe('TYPESAFE_API_KEY');
     expect(config.pull_request.auto_create).toBe(true);
     expect(config.pull_request.auto_merge).toBe(false);
   });

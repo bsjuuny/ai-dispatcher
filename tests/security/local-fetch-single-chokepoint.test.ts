@@ -3,18 +3,18 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const SRC_DIR = join(process.cwd(), 'src');
-const ALLOWED_FILE = join('src', 'providers', 'local', 'local-http-client.ts');
+const ALLOWED_FILE = join('src', 'providers', 'http-client.ts');
 
 /**
  * Source-level guard mirroring tests/security/dist-static-scan.test.ts's technique
  * (that one guards process spawning via the built dist/ output; this one guards
  * fetch() calls at the source level since fetch is a global, not an import ESLint's
  * no-restricted-imports can catch). Every .ts file under src/ except
- * local-http-client.ts itself must not call the global fetch(). A bare `fetch(`
+ * providers/http-client.ts itself must not call the global fetch(). A bare `fetch(`
  * text match is intentionally broad (not just `= fetch(`) so a future refactor
  * can't quietly reintroduce a second HTTP call site by wrapping it differently.
  */
-describe('source static scan: only local-http-client.ts may call fetch()', () => {
+describe('source static scan: only providers/http-client.ts may call fetch()', () => {
   const files = listTsFiles(SRC_DIR);
   expect(files.length).toBeGreaterThan(0);
 

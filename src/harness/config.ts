@@ -21,6 +21,19 @@ const HarnessConfigSchema = z.object({
     command_timeout_ms: 30_000,
     agent_startup_timeout_ms: 30_000,
   }),
+  jev: z.object({
+    enabled: z.boolean().default(true),
+    endpoint: z.string().url().default('https://www.jevai.org/api/v1/decisions'),
+    api_key_env: z.string().min(1).default('TYPESAFE_API_KEY'),
+    model: z.string().min(1).default('typesafe-ai/jev'),
+    timeout_ms: z.number().int().positive().default(5_000),
+  }).default({
+    enabled: true,
+    endpoint: 'https://www.jevai.org/api/v1/decisions',
+    api_key_env: 'TYPESAFE_API_KEY',
+    model: 'typesafe-ai/jev',
+    timeout_ms: 5_000,
+  }),
   budget: z.object({
     task: z.object({
       max_retries: z.number().int().min(0).default(2),

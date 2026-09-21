@@ -10,11 +10,13 @@ program
   .command('run <task>')
   .option('--project <path>', 'Project root', '.')
   .option('--json', 'Output JSON')
-  .action((request: string, options) => {
+  .action(async (request: string, options) => {
     const ctx = createHarnessContext(resolve(options.project));
     const task = ctx.tasks.create(request, ctx.projectRoot);
-    const started = ctx.tasks.enterPhase(task.id, 'ROUTING');
-    print(started, Boolean(options.json));
+    ctx.tasks.enterPhase(task.id, 'ROUTING');
+    const route = await ctx.jev.route({ task: request });
+    const routed = ctx.tasks.recordRoute(task.id, route as unknown as Record<string, unknown> & { complexity: string });
+    print({ ...routed, metadata: { ...routed.metadata, route } }, Boolean(options.json));
   });
 
 program

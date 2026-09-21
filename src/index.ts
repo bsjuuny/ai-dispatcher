@@ -14,6 +14,9 @@ export { qualifyLocalModel, findQualification, loadQualifications } from './loca
 export { assemblePortableKit, copyPortableNodeRuntime, type PortableKitResult } from './local/portable-kit.js';
 export { HarnessTaskManager } from './harness/task-manager.js';
 export { HerdrAdapter } from './harness/herdr-adapter.js';
+export { HttpJevDecisionClient } from './harness/jev-client.js';
+export { JevRouter } from './harness/jev-router.js';
+export { BudgetManager } from './harness/budget-manager.js';
 export { loadHarnessConfig, parseHarnessConfig, type HarnessConfig } from './harness/config.js';
 export type { HarnessStateStore } from './harness/state-store.js';
 export type { HarnessTaskRecord, HarnessPhase, HarnessTaskStatus } from './harness/types.js';
