@@ -8,6 +8,19 @@ const CommandSchema = z.union([z.string().min(1), z.array(z.string().min(1)).min
 
 const HarnessConfigSchema = z.object({
   project: z.object({ name: z.string().optional() }).default({}),
+  herdr: z.object({
+    enabled: z.boolean().default(true),
+    executable: z.string().min(1).default('herdr'),
+    session: z.string().min(1).default('ai-harness'),
+    command_timeout_ms: z.number().int().positive().default(30_000),
+    agent_startup_timeout_ms: z.number().int().positive().default(30_000),
+  }).default({
+    enabled: true,
+    executable: 'herdr',
+    session: 'ai-harness',
+    command_timeout_ms: 30_000,
+    agent_startup_timeout_ms: 30_000,
+  }),
   budget: z.object({
     task: z.object({
       max_retries: z.number().int().min(0).default(2),

@@ -47,7 +47,12 @@ export type DispatcherErrorCode =
   | 'REPOSITORY_LOCKED'
   | 'BASE_REVISION_CHANGED'
   | 'STALE_PATCH'
-  | 'PATCH_APPLY_FAILED';
+  | 'PATCH_APPLY_FAILED'
+  | 'HERDR_NOT_INSTALLED'
+  | 'HERDR_COMMAND_FAILED'
+  | 'HERDR_RESPONSE_INVALID'
+  | 'HERDR_TIMEOUT'
+  | 'HERDR_PROMPT_TOO_LARGE';
 
 export type ErrorSeverity = 'info' | 'warning' | 'error' | 'fatal';
 
