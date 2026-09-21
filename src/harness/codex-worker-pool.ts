@@ -20,7 +20,8 @@ export class CodexWorkerPool {
     tasks: DagTask[];
     workerCount: number;
     timeoutMs: number;
-    resolveWorkingDirectory: (task: DagTask) => string;
+    resolveWorkingDirectory: (task: DagTask) => string | Promise<string>;
+    onTaskSucceeded?: (assignment: CodexWorkAssignment) => void | Promise<void>;
     onUpdate?: (tasks: DagTaskSnapshot[]) => void;
   }): Promise<CodexWorkerPoolResult> {
     const scheduler = new DagScheduler(input.tasks);
@@ -35,13 +36,15 @@ export class CodexWorkerPool {
           scheduler.start(task.id, workerName);
           input.onUpdate?.(scheduler.snapshot());
           try {
+            const workingDirectory = await input.resolveWorkingDirectory(task);
             await this.runtime.run({
               name: workerName,
               kind: 'codex',
-              workingDirectory: input.resolveWorkingDirectory(task),
+              workingDirectory,
               timeoutMs: input.timeoutMs,
               prompt: buildCodexPrompt(task),
             });
+            await input.onTaskSucceeded?.({ task, workerName, workingDirectory });
             scheduler.succeed(task.id);
           } catch (cause) {
             scheduler.fail(task.id, cause instanceof Error ? cause.message : String(cause));

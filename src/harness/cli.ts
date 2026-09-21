@@ -3,6 +3,9 @@ import { resolve } from 'node:path';
 import { createHarnessContext } from './context.js';
 import { isDispatcherError } from '../models/error.js';
 import { startDashboard } from './dashboard-server.js';
+import { HarnessGitManager, type SubtaskWorktree, type TaskWorktrees } from './git-manager.js';
+import { HarnessTaskLog } from './task-log.js';
+import { runHarnessDoctor } from './doctor.js';
 
 const program = new Command();
 program.name('harness').description('Resumable AI Development Control Center.');
@@ -13,11 +16,8 @@ program
   .option('--json', 'Output JSON')
   .action(async (request: string, options) => {
     const ctx = createHarnessContext(resolve(options.project));
-    const task = ctx.tasks.create(request, ctx.projectRoot);
-    ctx.tasks.enterPhase(task.id, 'ROUTING');
-    const route = await ctx.jev.route({ task: request });
-    const routed = ctx.tasks.recordRoute(task.id, route as unknown as Record<string, unknown> & { complexity: string });
-    print({ ...routed, metadata: { ...routed.metadata, route } }, Boolean(options.json));
+    const task = await ctx.workflow.start(request);
+    print(task, Boolean(options.json));
   });
 
 program
@@ -51,6 +51,53 @@ for (const command of ['status', 'resume', 'retry', 'abort', 'finish'] as const)
 }
 
 program
+  .command('diff <taskId>')
+  .option('--project <path>', 'Project root', '.')
+  .action(async (taskId: string, options) => {
+    const ctx = createHarnessContext(resolve(options.project));
+    const integration = integrationMetadata(ctx.tasks.get(taskId).metadata);
+    const manager = new HarnessGitManager(ctx.projectRoot, resolve(ctx.projectRoot, ctx.config.git.worktree_directory));
+    process.stdout.write(await manager.diff(integration));
+  });
+
+program
+  .command('logs <taskId>')
+  .option('--project <path>', 'Project root', '.')
+  .action((taskId: string, options) => {
+    const root = resolve(options.project);
+    createHarnessContext(root).tasks.get(taskId);
+    process.stdout.write(new HarnessTaskLog(root).read(taskId));
+  });
+
+program
+  .command('cleanup <taskId>')
+  .option('--project <path>', 'Project root', '.')
+  .action(async (taskId: string, options) => {
+    const ctx = createHarnessContext(resolve(options.project));
+    const task = ctx.tasks.get(taskId);
+    const integration = integrationMetadata(task.metadata);
+    const manager = new HarnessGitManager(ctx.projectRoot, resolve(ctx.projectRoot, ctx.config.git.worktree_directory));
+    for (const worktree of subtaskMetadata(task.metadata).reverse()) await manager.removeWorktree(worktree.path);
+    await manager.removeWorktree(integration.integrationPath);
+    print(ctx.tasks.recordMetadata(taskId, { cleanedAt: new Date().toISOString() }), false);
+  });
+
+program
+  .command('doctor')
+  .option('--project <path>', 'Project root', '.')
+  .option('--json', 'Output JSON')
+  .action(async (options) => {
+    const ctx = createHarnessContext(resolve(options.project));
+    const checks = await runHarnessDoctor(ctx.projectRoot, ctx.config);
+    if (options.json) process.stdout.write(`${JSON.stringify(checks, null, 2)}\n`);
+    else {
+      process.stdout.write('Harness Doctor\n');
+      for (const check of checks) process.stdout.write(`${check.status === 'PASS' ? '✓' : check.status === 'WARN' ? '!' : '✗'} ${check.name}: ${check.detail}\n`);
+      process.stdout.write(checks.some((check) => check.status === 'FAIL') ? 'Not ready.\n' : 'Ready.\n');
+    }
+  });
+
+program
   .command('dashboard')
   .option('--project <path>', 'Project root', '.')
   .option('--port <number>', 'Dashboard port', '4321')
@@ -80,4 +127,17 @@ function print(value: unknown, json: boolean): void {
   }
   const task = value as { id: string; status: string; phase: string; retry: number; maxRetry: number };
   process.stdout.write(`${task.id} ${task.status} ${task.phase} retry=${task.retry}/${task.maxRetry}\n`);
+}
+
+function integrationMetadata(metadata: Record<string, unknown>): TaskWorktrees {
+  const value = metadata['integration'];
+  if (!value || typeof value !== 'object') throw new Error('Task has no integration worktree metadata.');
+  const candidate = value as Partial<TaskWorktrees>;
+  if (!candidate.taskId || !candidate.integrationBranch || !candidate.integrationPath || !candidate.baseRef) throw new Error('Integration worktree metadata is incomplete.');
+  return candidate as TaskWorktrees;
+}
+
+function subtaskMetadata(metadata: Record<string, unknown>): SubtaskWorktree[] {
+  const value = metadata['worktrees'];
+  return Array.isArray(value) ? value.filter((item): item is SubtaskWorktree => Boolean(item && typeof item === 'object' && typeof (item as Record<string, unknown>)['path'] === 'string')) : [];
 }

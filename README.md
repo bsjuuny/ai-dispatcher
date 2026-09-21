@@ -6,6 +6,101 @@ An AI Development Control Plane: a CLI that routes coding tasks between Claude C
 
 This is not a wrapper that just runs `claude` or `codex` for you. It classifies the task, scores both providers against real health/usage/capability data, dispatches with retry/fallback/circuit-breaking, runs your actual validation pipeline (with a bounded automatic fix loop on failure), routes the diff to an independent reviewer, and records everything to a structured audit log and a local SQLite history — so "the AI said it worked" and "the system verified it worked" are never the same claim.
 
+## AI Development Harness V4
+
+V4 adds the `harness` command and the **AI Development Control Center**. Responsibility is deliberately separated: Jev decides routing, Claude plans and reviews, Codex implements, Herdr runs agent sessions, Git worktrees isolate changes, command exit codes decide quality, and the Harness persists and resumes workflow state.
+
+### Requirements and installation
+
+- Node.js 22 or newer, Git, and this repository's pnpm dependencies.
+- [Herdr](https://herdr.dev/docs/cli-reference/) 0.8.x, with a named `ai-harness` session running.
+- Authenticated `claude` and `codex` CLIs.
+- Optional Jev API access through `TYPESAFE_API_KEY`. Without it, routing and the final gate use an explicitly labelled deterministic fallback.
+- GitHub CLI (`gh auth login`) when automatic push/PR/CI tracking is enabled.
+
+```bash
+pnpm install
+pnpm build
+pnpm link --global .
+
+# In a separate terminal, create or attach the persistent runtime session.
+herdr --session ai-harness
+
+harness doctor --project .
+```
+
+Credentials and tokens are never placed in `harness.config.yaml`; provider CLIs and environment variables own authentication.
+
+### Quick start
+
+Create `harness.config.yaml` (see [`harness.config.example.yaml`](harness.config.example.yaml)), then run:
+
+```bash
+harness run "Fix login token refresh bug" --project .
+harness status TASK-001 --project .
+harness diff TASK-001 --project .
+harness logs TASK-001 --project .
+```
+
+`harness run` creates `ai/TASK-001/integration` plus one branch/worktree per DAG task. It never modifies or pushes main/master directly. Independent DAG nodes run in parallel up to the budget; dependent worktrees are created only after their prerequisites have passed quality and merged into the integration branch.
+
+The quality gate runs configured `lint`, `typecheck`, `test`, `integration`, `build`, and `security` commands with `shell:false`. If no quality command is configured it fails closed; individual unconfigured stages are reported as `SKIPPED`. An AI response can never turn a non-zero exit code into PASS. Bounded retries pass failure evidence back to Codex, while requirement/security/architecture findings are escalated to Claude before another Codex attempt.
+
+### Harness CLI
+
+```text
+harness run "task" [--project .]
+harness list [--project .]
+harness status TASK-001 [--project .]
+harness resume TASK-001 [--project .]
+harness retry TASK-001 [--project .]
+harness abort TASK-001 [--project .]
+harness finish TASK-001 [--project .]
+harness diff TASK-001 [--project .]
+harness logs TASK-001 [--project .]
+harness cleanup TASK-001 [--project .]
+harness doctor [--project .] [--json]
+harness dashboard [--project .] [--port 4321]
+```
+
+State and structured artifacts live under `.ai-harness/`. Raw task requests are not persisted: the state database stores their SHA-256 and length, while planning, quality, review, final-gate, and CI artifacts store only the structured evidence needed by later phases. JSON state writes are transactional in SQLite; JSON artifact writes use temporary files followed by atomic rename.
+
+### Dashboard
+
+```bash
+harness dashboard --project . --port 4321
+```
+
+Open `http://127.0.0.1:4321`. The dependency-free TypeScript/Node dashboard reuses this repository's stack rather than introducing Next.js. It provides Overview, Tasks, Task Detail, Agents, Usage, and Settings views; SSE updates every three seconds. The common actions are Run, Retry, and Merge. Merge remains disabled until required GitHub checks pass and always requires an explicit browser confirmation. V4 never performs production deployment or automatic merge.
+
+### Harness architecture and workflow
+
+```text
+CLI / Dashboard
+  -> persistent Task Manager + budget/telemetry
+  -> Jev route (or labelled fallback)
+  -> Claude Architect / Specialist when routed
+  -> dependency-aware Codex worker pool
+  -> isolated subtask worktrees -> integration worktree
+  -> deterministic quality commands
+  -> independent Claude Reviewer
+  -> Jev final gate
+  -> guarded commit/push/PR -> required CI checks
+  -> explicit human merge gate
+```
+
+The Claude reviewer is a separate Herdr agent and receives only the requirement, diff, changed files, and quality evidence—not the Architect conversation. The safety layer rejects force push, protected-branch delivery, unsafe automatic conflict resolution, shell operators in quality commands, oversized Herdr argv prompts, and CI-bypassing merge attempts. Sensitive paths such as `.github/**`, `infra/**`, migrations, security, auth, and payment are marked protected for future auto-merge policy; auto-merge is off by default and is not executed by V4.
+
+### Troubleshooting
+
+- `HERDR_NOT_INSTALLED` / session errors: install Herdr and keep `herdr --session ai-harness` running.
+- Claude or Codex missing: install and authenticate the corresponding CLI, then rerun `harness doctor`.
+- Jev unavailable: set `TYPESAFE_API_KEY`, or inspect `route.json` for the labelled deterministic fallback reason.
+- `QUALITY_COMMAND_MISSING`: add at least one real quality command to `harness.config.yaml`; production projects should configure every applicable stage.
+- Worktree conflict: the Harness aborts the merge and records failure instead of choosing conflict resolutions automatically.
+- GitHub authentication/PR failure: run `gh auth status`, fix the credential or remote, then use the bounded retry/resume flow.
+- `BUDGET_BLOCKED` or `ACTION REQUIRED`: inspect Task Detail. The Harness never auto-approves a blocked agent or destructive request.
+
 ## Architecture
 
 ```

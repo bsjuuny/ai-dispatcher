@@ -69,7 +69,8 @@ export type DispatcherErrorCode =
   | 'GITHUB_NOT_AUTHENTICATED'
   | 'PR_CREATION_FAILED'
   | 'CI_CHECK_FAILED'
-  | 'CI_CHECK_PENDING';
+  | 'CI_CHECK_PENDING'
+  | 'BUDGET_EXCEEDED';
 
 export type ErrorSeverity = 'info' | 'warning' | 'error' | 'fatal';
 

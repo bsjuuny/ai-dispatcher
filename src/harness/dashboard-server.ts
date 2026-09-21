@@ -46,9 +46,8 @@ async function route(ctx: HarnessContext, request: IncomingMessage, response: Se
     const body = await readJson(request);
     if (typeof body['task'] !== 'string' || !body['task'].trim()) return json(response, 400, { error: 'task is required' });
     const task = ctx.tasks.create(body['task'], ctx.projectRoot);
-    ctx.tasks.enterPhase(task.id, 'ROUTING');
-    const routeResult = await ctx.jev.route({ task: body['task'] });
-    return json(response, 201, ctx.tasks.recordRoute(task.id, routeResult as unknown as Record<string, unknown> & { complexity: string }));
+    void ctx.workflow.execute(task.id, body['task']);
+    return json(response, 202, task);
   }
   const taskMatch = url.pathname.match(/^\/api\/tasks\/(TASK-[A-Za-z0-9-]+)$/);
   if (request.method === 'GET' && taskMatch) {

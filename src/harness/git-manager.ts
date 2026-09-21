@@ -96,6 +96,11 @@ export class HarnessGitManager {
     return result.stdout;
   }
 
+  async changedFiles(task: TaskWorktrees): Promise<string[]> {
+    const result = await this.requireSuccess(['diff', '--name-only', `${task.baseRef}...HEAD`], task.integrationPath, 60_000);
+    return result.stdout.split(/\r?\n/).map((file) => file.trim()).filter(Boolean);
+  }
+
   async removeWorktree(path: string, force = false): Promise<void> {
     this.assertWithinRoot(path);
     const args = ['worktree', 'remove', path];

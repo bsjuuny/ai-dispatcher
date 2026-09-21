@@ -1,0 +1,54 @@
+project:
+  name: my-project
+
+herdr:
+  enabled: true
+  executable: herdr
+  session: ai-harness
+
+jev:
+  enabled: true
+  endpoint: https://www.jevai.org/api/v1/decisions
+  api_key_env: TYPESAFE_API_KEY
+
+budget:
+  task:
+    max_retries: 2
+    max_parallel_agents: 3
+    max_duration_minutes: 60
+  claude:
+    max_calls: 3
+  codex:
+    max_workers: 3
+    max_calls: 10
+  specialist:
+    enabled: true
+    max_calls: 1
+
+quality:
+  lint: [pnpm, lint]
+  typecheck: [pnpm, typecheck]
+  test: [pnpm, test]
+  build: [pnpm, build]
+
+git:
+  base_branch: main
+  worktree_directory: worktrees
+
+pull_request:
+  auto_create: true
+  auto_merge: false
+  protected_paths:
+    - .github/**
+    - infra/**
+    - terraform/**
+    - database/migrations/**
+    - security/**
+    - auth/**
+    - payment/**
+
+timeouts:
+  claude_minutes: 15
+  codex_minutes: 15
+  quality_minutes: 15
+  ci_minutes: 30

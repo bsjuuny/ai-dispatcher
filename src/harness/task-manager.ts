@@ -117,6 +117,15 @@ export class HarnessTaskManager {
     );
   }
 
+  block(taskId: string, errorCode: string, budget = false): HarnessTaskRecord {
+    this.get(taskId);
+    return this.store.update(taskId, {
+      status: budget ? 'BUDGET_BLOCKED' : 'BLOCKED',
+      updatedAt: this.now().toISOString(),
+      errorCode,
+    });
+  }
+
   recordRoute(taskId: string, route: Record<string, unknown> & { complexity: string }): HarnessTaskRecord {
     const current = this.get(taskId);
     return this.store.update(taskId, {
