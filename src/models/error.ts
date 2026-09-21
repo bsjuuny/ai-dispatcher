@@ -55,7 +55,11 @@ export type DispatcherErrorCode =
   | 'HERDR_PROMPT_TOO_LARGE'
   | 'HTTP_TARGET_REJECTED'
   | 'JEV_API_UNAVAILABLE'
-  | 'JEV_RESPONSE_INVALID';
+  | 'JEV_RESPONSE_INVALID'
+  | 'DAG_INVALID'
+  | 'AGENT_OUTPUT_INVALID'
+  | 'AGENT_BLOCKED'
+  | 'AGENT_FAILED';
 
 export type ErrorSeverity = 'info' | 'warning' | 'error' | 'fatal';
 
