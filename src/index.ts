@@ -23,6 +23,7 @@ export { CodexWorkerPool } from './harness/codex-worker-pool.js';
 export { ArtifactStore } from './harness/artifact-store.js';
 export { HerdrAgentRuntime } from './harness/agent-runtime.js';
 export { HarnessGitManager } from './harness/git-manager.js';
+export { DeterministicQualityGate, normalizeCommand } from './harness/quality-gate.js';
 export { loadHarnessConfig, parseHarnessConfig, type HarnessConfig } from './harness/config.js';
 export type { HarnessStateStore } from './harness/state-store.js';
 export type { HarnessTaskRecord, HarnessPhase, HarnessTaskStatus } from './harness/types.js';

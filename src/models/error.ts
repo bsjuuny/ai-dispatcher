@@ -63,7 +63,9 @@ export type DispatcherErrorCode =
   | 'GIT_REPO_MISSING'
   | 'WORKTREE_CREATE_FAILED'
   | 'GIT_COMMAND_FAILED'
-  | 'SAFETY_POLICY_VIOLATION';
+  | 'SAFETY_POLICY_VIOLATION'
+  | 'QUALITY_COMMAND_INVALID'
+  | 'QUALITY_COMMAND_MISSING';
 
 export type ErrorSeverity = 'info' | 'warning' | 'error' | 'fatal';
 
