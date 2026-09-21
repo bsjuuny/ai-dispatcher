@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { resolve } from 'node:path';
 import { createHarnessContext } from './context.js';
 import { isDispatcherError } from '../models/error.js';
+import { startDashboard } from './dashboard-server.js';
 
 const program = new Command();
 program.name('harness').description('Resumable AI Development Control Center.');
@@ -48,6 +49,15 @@ for (const command of ['status', 'resume', 'retry', 'abort', 'finish'] as const)
       print(task, Boolean(options.json));
     });
 }
+
+program
+  .command('dashboard')
+  .option('--project <path>', 'Project root', '.')
+  .option('--port <number>', 'Dashboard port', '4321')
+  .action(async (options) => {
+    const handle = await startDashboard(resolve(options.project), Number(options.port));
+    process.stdout.write(`AI Development Control Center: http://127.0.0.1:${handle.port}\n`);
+  });
 
 program.parseAsync(process.argv).catch((error: unknown) => {
   const message = isDispatcherError(error)

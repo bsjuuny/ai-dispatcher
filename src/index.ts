@@ -28,6 +28,7 @@ export { ClaudeReviewerService, parseReview } from './harness/review-service.js'
 export { ClaudeSpecialistService } from './harness/specialist-service.js';
 export { JevFinalGate } from './harness/final-gate.js';
 export { TelemetryManager, checkCallBudget } from './harness/telemetry.js';
+export { startDashboard } from './harness/dashboard-server.js';
 export { loadHarnessConfig, parseHarnessConfig, type HarnessConfig } from './harness/config.js';
 export type { HarnessStateStore } from './harness/state-store.js';
 export type { HarnessTaskRecord, HarnessPhase, HarnessTaskStatus } from './harness/types.js';

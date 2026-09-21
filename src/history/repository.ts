@@ -24,6 +24,10 @@ import type { AgentCallRecord, AgentUsageSummary, HarnessTelemetryStore } from '
 export class HistoryRepository implements UsageStore, AuditSink, HarnessStateStore, HarnessTelemetryStore {
   constructor(private readonly db: DatabaseSync) {}
 
+  close(): void {
+    this.db.close();
+  }
+
   recordTaskCreated(task: DispatcherTask): void {
     this.run(
       `INSERT INTO tasks (task_id, command, started_at, status, retry_count, fallback_count, input_size)
