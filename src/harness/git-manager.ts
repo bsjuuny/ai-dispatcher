@@ -25,6 +25,8 @@ export interface MergeResult {
 }
 
 export class HarnessGitManager {
+  private readonly integrationQueues = new Map<string, Promise<void>>();
+
   constructor(
     private readonly projectRoot: string,
     private readonly worktreeRoot: string,
@@ -81,14 +83,16 @@ export class HarnessGitManager {
   }
 
   async mergeSubtask(task: TaskWorktrees, subtask: SubtaskWorktree): Promise<MergeResult> {
-    const result = await this.git(
-      ['merge', '--no-ff', '--no-edit', subtask.branch],
-      task.integrationPath,
-      60_000,
-    );
-    if (result.exitCode === 0) return { status: 'MERGED', stdout: result.stdout, stderr: result.stderr };
-    await this.git(['merge', '--abort'], task.integrationPath);
-    return { status: 'CONFLICT', stdout: result.stdout, stderr: result.stderr };
+    return this.withIntegrationLock(task.integrationPath, async () => {
+      const result = await this.git(
+        ['merge', '--no-ff', '--no-edit', subtask.branch],
+        task.integrationPath,
+        60_000,
+      );
+      if (result.exitCode === 0) return { status: 'MERGED', stdout: result.stdout, stderr: result.stderr };
+      await this.git(['merge', '--abort'], task.integrationPath);
+      return { status: 'CONFLICT', stdout: result.stdout, stderr: result.stderr };
+    });
   }
 
   async diff(task: TaskWorktrees): Promise<string> {
@@ -131,6 +135,21 @@ export class HarnessGitManager {
 
   private git(args: string[], cwd: string, timeoutMs = 30_000) {
     return this.execute({ file: 'git', args, cwd, timeoutMs });
+  }
+
+  private async withIntegrationLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.integrationQueues.get(path) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    const tail = previous.then(() => current);
+    this.integrationQueues.set(path, tail);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.integrationQueues.get(path) === tail) this.integrationQueues.delete(path);
+    }
   }
 }
 

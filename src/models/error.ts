@@ -71,7 +71,9 @@ export type DispatcherErrorCode =
   | 'CI_CHECK_FAILED'
   | 'CI_CHECK_PENDING'
   | 'BUDGET_EXCEEDED'
-  | 'RESUME_CONTEXT_MISSING';
+  | 'RESUME_CONTEXT_MISSING'
+  | 'TASK_TIMEOUT'
+  | 'HUMAN_APPROVAL_REQUIRED';
 
 export type ErrorSeverity = 'info' | 'warning' | 'error' | 'fatal';
 

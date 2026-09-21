@@ -8,6 +8,7 @@ export interface PullRequestInfo {
   state: string;
   headRefName: string;
   baseRefName: string;
+  headRefOid: string;
 }
 
 export interface CiCheck {
@@ -72,25 +73,30 @@ export class GitHubManager {
 
   async pullRequest(branch: string): Promise<PullRequestInfo> {
     const outcome = await this.command('gh', [
-      'pr', 'view', branch, '--json', 'number,url,state,headRefName,baseRefName',
+      'pr', 'view', branch, '--json', 'number,url,state,headRefName,baseRefName,headRefOid',
     ], 30_000);
     if (outcome.exitCode !== 0) throw error('PR_CREATION_FAILED', outcome.stderr || outcome.stdout, true);
-    return parseJson<PullRequestInfo>(outcome.stdout, 'GitHub PR response');
+    return parsePullRequest(parseJson<unknown>(outcome.stdout, 'GitHub PR response'));
   }
 
   async requiredChecks(branch: string): Promise<CiCheck[]> {
     const outcome = await this.command('gh', [
       'pr', 'checks', branch, '--required', '--json', 'name,state,bucket,link',
     ], 30_000);
-    if (outcome.exitCode !== 0) {
-      throw error('CI_CHECK_FAILED', outcome.stderr || outcome.stdout, true);
-    }
-    const checks = parseJson<unknown>(outcome.stdout, 'GitHub checks response');
-    if (!Array.isArray(checks)) throw error('CI_CHECK_FAILED', 'GitHub checks response is not an array.', true);
-    return checks.map(parseCheck);
+    return parseChecksOutcome(outcome);
   }
 
-  async mergeAfterHumanApproval(taskId: string, branch: string): Promise<void> {
+  async waitForRequiredChecks(branch: string, timeoutMs: number): Promise<CiCheck[]> {
+    const outcome = await this.command('gh', [
+      'pr', 'checks', branch, '--required', '--watch', '--interval', '10', '--json', 'name,state,bucket,link',
+    ], timeoutMs);
+    if (outcome.timedOut) {
+      throw error('CI_CHECK_PENDING', `Required checks did not finish within ${timeoutMs}ms.`, true);
+    }
+    return parseChecksOutcome(outcome);
+  }
+
+  async mergeAfterHumanApproval(taskId: string, branch: string, expectedRevision: string, expectedBase?: string): Promise<void> {
     this.assertTaskBranch(taskId, branch);
     const checks = await this.requiredChecks(branch);
     const failed = checks.filter((check) => check.bucket === 'fail' || check.bucket === 'cancel');
@@ -101,7 +107,11 @@ export class GitHubManager {
     if (pending.length > 0) {
       throw error('CI_CHECK_PENDING', `Required checks are not complete: ${pending.map((check) => check.name).join(', ')}`, true);
     }
-    const outcome = await this.command('gh', ['pr', 'merge', branch, '--merge'], 60_000);
+    const pullRequest = await this.pullRequest(branch);
+    if (pullRequest.state !== 'OPEN' || pullRequest.headRefName !== branch || pullRequest.headRefOid !== expectedRevision || (expectedBase && pullRequest.baseRefName !== expectedBase)) {
+      throw error('SAFETY_POLICY_VIOLATION', 'Pull request head, base, state, or reviewed revision changed after verification.', false);
+    }
+    const outcome = await this.command('gh', ['pr', 'merge', branch, '--merge', '--match-head-commit', expectedRevision], 60_000);
     if (outcome.exitCode !== 0) throw error('CI_CHECK_FAILED', outcome.stderr || outcome.stdout, false);
   }
 
@@ -168,6 +178,31 @@ function parseCheck(value: unknown): CiCheck {
     bucket: check['bucket'],
     link: typeof check['link'] === 'string' ? check['link'] : undefined,
   };
+}
+
+function parsePullRequest(value: unknown): PullRequestInfo {
+  if (!value || typeof value !== 'object') throw error('PR_CREATION_FAILED', 'Invalid GitHub pull request response.', true);
+  const pullRequest = value as Record<string, unknown>;
+  if (
+    typeof pullRequest['number'] !== 'number' || typeof pullRequest['url'] !== 'string' ||
+    typeof pullRequest['state'] !== 'string' || typeof pullRequest['headRefName'] !== 'string' ||
+    typeof pullRequest['baseRefName'] !== 'string' || typeof pullRequest['headRefOid'] !== 'string'
+  ) throw error('PR_CREATION_FAILED', 'GitHub pull request response is missing required fields.', true);
+  return pullRequest as unknown as PullRequestInfo;
+}
+
+function parseChecksOutcome(outcome: Awaited<ReturnType<ProcessExecutor>>): CiCheck[] {
+  const source = outcome.stdout.trim();
+  if (source) {
+    try {
+      const checks = JSON.parse(source) as unknown;
+      if (Array.isArray(checks)) return checks.map(parseCheck);
+    } catch {
+      // The command error below includes stderr/stdout without pretending invalid output is an empty check set.
+    }
+  }
+  if (outcome.exitCode === 0 && !source) return [];
+  throw error('CI_CHECK_FAILED', outcome.stderr || outcome.stdout || `GitHub checks exited with code ${outcome.exitCode}.`, true);
 }
 
 function matchesProtectedPath(file: string, glob: string): boolean {

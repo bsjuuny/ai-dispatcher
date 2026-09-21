@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { HarnessGitManager } from '../../src/harness/git-manager.js';
+import type { ProcessExecutor } from '../../src/harness/herdr-adapter.js';
 
 interface Fixture {
   root: string;
@@ -77,6 +78,25 @@ describe('HarnessGitManager', () => {
     await expect(new HarnessGitManager(test.repo, test.worktrees).removeWorktree(test.repo)).rejects.toMatchObject({
       code: 'SAFETY_POLICY_VIOLATION',
     });
+  });
+
+  it('serializes concurrent merges into the same integration worktree', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const execute: ProcessExecutor = async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+      return { exitCode: 0, stdout: 'merged', stderr: '', timedOut: false, durationMs: 10 };
+    };
+    const manager = new HarnessGitManager('C:/repo', 'C:/worktrees', execute);
+    const task = { taskId: 'TASK-001', integrationBranch: 'ai/TASK-001/integration', integrationPath: 'C:/worktrees/TASK-001/integration', baseRef: 'main' };
+    await Promise.all([
+      manager.mergeSubtask(task, { taskId: task.taskId, subtaskId: 'T1', branch: 'ai/TASK-001/T1', path: 'C:/worktrees/TASK-001/T1' }),
+      manager.mergeSubtask(task, { taskId: task.taskId, subtaskId: 'T2', branch: 'ai/TASK-001/T2', path: 'C:/worktrees/TASK-001/T2' }),
+    ]);
+    expect(maxActive).toBe(1);
   });
 });
 

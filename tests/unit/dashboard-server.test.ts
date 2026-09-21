@@ -22,11 +22,13 @@ describe('dashboard server', () => {
 
     const page = await fetch(base);
     expect(page.status).toBe(200);
-    expect(await page.text()).toContain('AI DEVELOPMENT CONTROL CENTER');
+    const pageText = await page.text();
+    expect(pageText).toContain('AI DEVELOPMENT CONTROL CENTER');
+    const csrf = csrfFrom(pageText);
 
     const created = await fetch(`${base}/api/tasks`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-harness-csrf': csrf },
       body: JSON.stringify({ task: 'Fix a small display typo' }),
     });
     expect(created.status).toBe(202);
@@ -46,19 +48,48 @@ describe('dashboard server', () => {
     const body = await detail.json() as { originalRequest: unknown; requestPolicy: string };
     expect(body.originalRequest).toBeNull();
     expect(body.requestPolicy).toContain('not persisted');
+
+    const retried = await fetch(`${base}/api/tasks/${task.id}/retry`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-harness-csrf': csrf },
+      body: '{}',
+    });
+    expect(retried.status).toBe(200);
+    expect(await retried.json()).toMatchObject({ status: 'BLOCKED', errorCode: 'RESUME_CONTEXT_MISSING' });
   });
 
   it('rejects an empty task request', async () => {
     root = await mkdtemp(join(tmpdir(), 'ai-harness-dashboard-'));
     dashboard = await startDashboard(root, 0);
+    const base = `http://127.0.0.1:${dashboard.port}`;
+    const csrf = csrfFrom(await (await fetch(base)).text());
     const response = await fetch(`http://127.0.0.1:${dashboard.port}/api/tasks`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-harness-csrf': csrf },
       body: JSON.stringify({ task: '   ' }),
     });
     expect(response.status).toBe(400);
   });
+
+  it('rejects cross-site or tokenless mutations', async () => {
+    root = await mkdtemp(join(tmpdir(), 'ai-harness-dashboard-'));
+    dashboard = await startDashboard(root, 0);
+    const base = `http://127.0.0.1:${dashboard.port}`;
+    const csrf = csrfFrom(await (await fetch(base)).text());
+    const response = await fetch(`${base}/api/tasks`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-harness-csrf': csrf, origin: 'https://attacker.example' },
+      body: JSON.stringify({ task: 'Run attacker input' }),
+    });
+    expect(response.status).toBe(403);
+  });
 });
+
+function csrfFrom(page: string): string {
+  const value = page.match(/const csrf='([^']+)'/)?.[1];
+  if (!value) throw new Error('Dashboard did not embed a CSRF token.');
+  return value;
+}
 
 async function waitForTerminal(base: string, taskId: string): Promise<void> {
   for (let attempt = 0; attempt < 50; attempt += 1) {

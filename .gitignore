@@ -4,6 +4,7 @@ coverage/
 *.log
 .dispatcher/
 .ai-harness/
+worktrees/
 portable-*/
 .env
 .env.local

@@ -1,4 +1,5 @@
 import { DispatcherError, isDispatcherError } from '../models/error.js';
+import { scrubSecrets } from '../logging/redaction.js';
 import type { AgentRuntime } from './agent-runtime.js';
 import { ArchitectService } from './architect-service.js';
 import { ArtifactStore } from './artifact-store.js';
@@ -50,23 +51,63 @@ export class HarnessWorkflow {
       return this.deps.tasks.block(taskId, 'RESUME_CONTEXT_MISSING');
     }
     const github = this.deps.githubFactory(delivery.integrationPath);
-    this.deps.tasks.enterPhase(taskId, 'CI_WAIT', { status: 'WAITING' });
-    const checks = await github.requiredChecks(delivery.branch);
-    this.deps.artifacts.writeJson(taskId, 'ci', checks);
-    this.deps.tasks.recordMetadata(taskId, { ci: checks });
-    if (checks.some((check) => check.bucket === 'fail' || check.bucket === 'cancel')) {
-      return this.deps.tasks.fail(taskId, 'CI_CHECK_FAILED');
+    try {
+      if (delivery.state === 'COMMITTED') {
+        await github.pushIntegration(taskId);
+        delivery.state = 'PUSHED';
+        this.deps.tasks.recordMetadata(taskId, { delivery });
+      }
+      if (!task.metadata['pullRequest']) {
+        let pullRequest;
+        try {
+          pullRequest = await github.pullRequest(delivery.branch);
+        } catch (cause) {
+          if (!isDispatcherError(cause) || cause.code !== 'PR_CREATION_FAILED' || delivery.state !== 'PUSHED') throw cause;
+          pullRequest = await github.createPullRequest({
+            taskId,
+            branch: delivery.branch,
+            baseBranch: delivery.baseBranch,
+            title: task.title,
+            body: `## Harness Task\n${taskId}\n\nResumed from a persisted delivery checkpoint.`,
+          });
+        }
+        delivery.state = 'PR_CREATED';
+        this.deps.tasks.recordMetadata(taskId, { pullRequest, delivery });
+      }
+      this.deps.tasks.enterPhase(taskId, 'CI_WAIT', { status: 'WAITING' });
+      return await this.waitForCi(taskId, delivery.branch, github, true);
+    } catch (cause) {
+      if (isDispatcherError(cause) && cause.code === 'CI_CHECK_PENDING') {
+        this.deps.log.append(taskId, 'resume.ci-pending');
+        return this.deps.tasks.wait(taskId, cause.code);
+      }
+      throw cause;
     }
-    if (checks.some((check) => check.bucket !== 'pass' && check.bucket !== 'skipping')) {
-      return this.deps.tasks.get(taskId);
+  }
+
+  async retry(taskId: string): Promise<HarnessTaskRecord> {
+    const current = this.deps.tasks.get(taskId);
+    if (!['FAILED', 'BLOCKED', 'BUDGET_BLOCKED'].includes(current.status)) {
+      throw new DispatcherError({
+        code: 'INVALID_STATE_TRANSITION',
+        message: `${taskId} can only be retried from FAILED, BLOCKED, or BUDGET_BLOCKED.`,
+        retryable: false,
+        taskId,
+      });
     }
-    this.deps.log.append(taskId, 'resume.ci-complete', { checks: checks.length });
-    return this.deps.tasks.enterPhase(taskId, 'WAITING_HUMAN', { status: 'WAITING' });
+    const retried = this.deps.tasks.retry(taskId);
+    if (retried.status === 'FAILED') return retried;
+    return this.resume(taskId);
   }
 
   async execute(taskId: string, requirement: string): Promise<HarnessTaskRecord> {
     const { tasks, config, artifacts } = this.deps;
-    const runtime = new InstrumentedAgentRuntime(taskId, this.deps.runtime, this.deps.telemetry, config.budget, this.deps.log);
+    const existing = tasks.get(taskId);
+    const configuredDeadline = Date.parse(existing.createdAt) + minutes(config.budget.task.max_duration_minutes);
+    const persistedDeadline = typeof existing.metadata['deadlineAt'] === 'string' ? Date.parse(existing.metadata['deadlineAt']) : Number.NaN;
+    const deadlineMs = Number.isFinite(persistedDeadline) ? persistedDeadline : configuredDeadline;
+    tasks.recordMetadata(taskId, { deadlineAt: new Date(deadlineMs).toISOString() });
+    const runtime = new InstrumentedAgentRuntime(taskId, this.deps.runtime, this.deps.telemetry, config.budget, this.deps.log, deadlineMs);
     this.deps.log.append(taskId, 'workflow.started');
     try {
       tasks.enterPhase(taskId, 'ROUTING');
@@ -88,7 +129,7 @@ export class HarnessWorkflow {
           timeoutMs: minutes(config.timeouts.claude_minutes),
         });
         specialistContext = [specialist.output];
-        artifacts.writeJson(taskId, 'specialist', { state: specialist.state, output: specialist.output.slice(0, 12_000) });
+        artifacts.writeJson(taskId, 'specialist', { state: specialist.state, output: scrubSecrets(specialist.output).slice(0, 12_000) });
       }
 
       tasks.enterPhase(taskId, 'PLANNING');
@@ -121,7 +162,7 @@ export class HarnessWorkflow {
         onTaskSucceeded: async ({ task: dagTask }) => {
           const worktree = subtaskWorktrees.get(dagTask.id);
           if (!worktree) throw new Error(`Missing worktree for ${dagTask.id}.`);
-          const quality = await this.deps.quality.run({ cwd: worktree.path, commands: config.quality, timeoutMs: minutes(config.timeouts.quality_minutes) });
+          const quality = await this.deps.quality.run({ cwd: worktree.path, commands: config.quality, timeoutMs: this.remainingTimeout(taskId, minutes(config.timeouts.quality_minutes)) });
           artifacts.writeJson(taskId, `quality-${dagTask.id}`, quality);
           if (!quality.passed) throw new DispatcherError({ code: quality.errorCode ?? 'VALIDATION_FAILED', message: `Subtask ${dagTask.id} failed quality: ${quality.failedStages.join(', ') || quality.errorCode}.`, retryable: true, taskId });
           await this.deps.git.commitSubtask(worktree, `feat(${taskId.toLowerCase()}): ${dagTask.title}`);
@@ -141,12 +182,21 @@ export class HarnessWorkflow {
       tasks.enterPhase(taskId, 'COMMIT');
       const github = this.deps.githubFactory(taskWorktree.integrationPath);
       const revision = await github.commitIntegration(taskId, titleFromRequirement(requirement));
+      const delivery = {
+        branch: taskWorktree.integrationBranch,
+        integrationPath: taskWorktree.integrationPath,
+        baseBranch: taskWorktree.baseRef,
+        revision,
+        state: 'COMMITTED',
+      };
+      tasks.recordMetadata(taskId, { delivery });
       if (!config.pull_request.auto_create) {
         this.deps.log.append(taskId, 'delivery.awaiting-human', { autoCreate: false });
         return tasks.enterPhase(taskId, 'WAITING_HUMAN', { status: 'WAITING' });
       }
       tasks.enterPhase(taskId, 'PUSH');
       await github.pushIntegration(taskId);
+      tasks.recordMetadata(taskId, { delivery: { ...delivery, state: 'PUSHED' } });
       tasks.enterPhase(taskId, 'PR_CREATE');
       const pullRequest = await github.createPullRequest({
         taskId,
@@ -157,22 +207,15 @@ export class HarnessWorkflow {
       });
       tasks.recordMetadata(taskId, {
         pullRequest,
-        delivery: { branch: taskWorktree.integrationBranch, integrationPath: taskWorktree.integrationPath, revision },
+        delivery: { ...delivery, state: 'PR_CREATED' },
       });
       tasks.enterPhase(taskId, 'CI_WAIT', { status: 'WAITING' });
-      const checks = await github.requiredChecks(taskWorktree.integrationBranch);
-      artifacts.writeJson(taskId, 'ci', checks);
-      tasks.recordMetadata(taskId, { ci: checks });
-      if (checks.some((check) => check.bucket === 'fail' || check.bucket === 'cancel')) {
-        this.deps.log.append(taskId, 'ci.failed', { failedChecks: checks.filter((check) => check.bucket === 'fail' || check.bucket === 'cancel').map((check) => check.name) });
-        return tasks.fail(taskId, 'CI_CHECK_FAILED');
-      }
-      this.deps.log.append(taskId, 'delivery.awaiting-human', { pullRequest: pullRequest.url, checks: checks.length });
-      return tasks.enterPhase(taskId, 'WAITING_HUMAN', { status: 'WAITING' });
+      return await this.waitForCi(taskId, taskWorktree.integrationBranch, github, false);
     } catch (cause) {
       const code = isDispatcherError(cause) ? cause.code : 'INTERNAL_LOGIC_ERROR';
       if (code === 'AGENT_BLOCKED') return tasks.block(taskId, code);
       if (code === 'BUDGET_EXCEEDED') return tasks.block(taskId, code, true);
+      if (code === 'CI_CHECK_PENDING' && tasks.get(taskId).phase === 'CI_WAIT') return tasks.wait(taskId, code);
       this.deps.log.append(taskId, 'workflow.failed', { errorCode: code });
       return tasks.fail(taskId, code);
     }
@@ -199,7 +242,7 @@ export class HarnessWorkflow {
   ): Promise<{ decision: string; quality: QualityGateResult; review: ClaudeReview }> {
     const { tasks, config, artifacts } = this.deps;
     tasks.enterPhase(taskId, 'QUALITY_CHECK');
-    const quality = await this.deps.quality.run({ cwd: taskWorktree.integrationPath, commands: config.quality, timeoutMs: minutes(config.timeouts.quality_minutes) });
+    const quality = await this.deps.quality.run({ cwd: taskWorktree.integrationPath, commands: config.quality, timeoutMs: this.remainingTimeout(taskId, minutes(config.timeouts.quality_minutes)) });
     artifacts.writeJson(taskId, 'quality', quality);
     tasks.recordMetadata(taskId, { quality });
     const diff = await this.deps.git.diff(taskWorktree);
@@ -268,8 +311,36 @@ export class HarnessWorkflow {
         `Reviewer issues: ${JSON.stringify(outcome.review.issues)}`,
       ].join('\n'),
     });
-    this.deps.artifacts.writeJson(taskWorktree.taskId, `remediation-${this.deps.tasks.get(taskWorktree.taskId).retry}`, { output: result.output.slice(0, 12_000) });
+    this.deps.artifacts.writeJson(taskWorktree.taskId, `remediation-${this.deps.tasks.get(taskWorktree.taskId).retry}`, { output: scrubSecrets(result.output).slice(0, 12_000) });
     return result.output;
+  }
+
+  private async waitForCi(taskId: string, branch: string, github: GitHubManager, resumed: boolean): Promise<HarnessTaskRecord> {
+    const timeoutMs = this.remainingTimeout(taskId, minutes(this.deps.config.timeouts.ci_minutes));
+    const checks = await github.waitForRequiredChecks(branch, timeoutMs);
+    this.deps.artifacts.writeJson(taskId, 'ci', checks);
+    this.deps.tasks.recordMetadata(taskId, { ci: checks });
+    const failed = checks.filter((check) => check.bucket === 'fail' || check.bucket === 'cancel');
+    if (failed.length > 0) {
+      this.deps.log.append(taskId, 'ci.failed', { failedChecks: failed.map((check) => check.name) });
+      return this.deps.tasks.fail(taskId, 'CI_CHECK_FAILED');
+    }
+    if (checks.some((check) => check.bucket !== 'pass' && check.bucket !== 'skipping')) {
+      return this.deps.tasks.wait(taskId, 'CI_CHECK_PENDING');
+    }
+    this.deps.log.append(taskId, resumed ? 'resume.ci-complete' : 'delivery.awaiting-human', { checks: checks.length });
+    return this.deps.tasks.enterPhase(taskId, 'WAITING_HUMAN', { status: 'WAITING' });
+  }
+
+  private remainingTimeout(taskId: string, requestedMs: number): number {
+    const task = this.deps.tasks.get(taskId);
+    const deadlineAt = typeof task.metadata['deadlineAt'] === 'string' ? Date.parse(task.metadata['deadlineAt']) : Number.NaN;
+    if (!Number.isFinite(deadlineAt)) return requestedMs;
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      throw new DispatcherError({ code: 'TASK_TIMEOUT', message: 'Harness task duration budget exhausted.', retryable: false, taskId });
+    }
+    return Math.min(requestedMs, remainingMs);
   }
 }
 
@@ -312,11 +383,26 @@ function pullRequestBody(taskId: string, plan: ArchitectPlan, quality: QualityGa
   ].join('\n');
 }
 
-function parseDelivery(metadata: Record<string, unknown>): { branch: string; integrationPath: string } | undefined {
+function parseDelivery(metadata: Record<string, unknown>): {
+  branch: string;
+  integrationPath: string;
+  revision: string;
+  baseBranch: string;
+  state: 'COMMITTED' | 'PUSHED' | 'PR_CREATED';
+} | undefined {
   const value = metadata['delivery'];
   if (!value || typeof value !== 'object') return undefined;
   const delivery = value as Record<string, unknown>;
-  return typeof delivery['branch'] === 'string' && typeof delivery['integrationPath'] === 'string'
-    ? { branch: delivery['branch'], integrationPath: delivery['integrationPath'] }
-    : undefined;
+  if (
+    typeof delivery['branch'] !== 'string' || typeof delivery['integrationPath'] !== 'string' ||
+    typeof delivery['revision'] !== 'string' || typeof delivery['baseBranch'] !== 'string' ||
+    !['COMMITTED', 'PUSHED', 'PR_CREATED'].includes(String(delivery['state']))
+  ) return undefined;
+  return {
+    branch: delivery['branch'],
+    integrationPath: delivery['integrationPath'],
+    revision: delivery['revision'],
+    baseBranch: delivery['baseBranch'],
+    state: delivery['state'] as 'COMMITTED' | 'PUSHED' | 'PR_CREATED',
+  };
 }

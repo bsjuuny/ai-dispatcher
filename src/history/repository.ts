@@ -14,7 +14,7 @@ import type {
   HarnessTaskRecord,
   HarnessTaskStatus,
 } from '../harness/types.js';
-import type { AgentCallRecord, AgentUsageSummary, HarnessTelemetryStore } from '../harness/telemetry.js';
+import type { ActiveAgentCall, AgentCallLimits, AgentCallRecord, AgentUsageSummary, HarnessTelemetryStore } from '../harness/telemetry.js';
 
 /**
  * The only file with raw SQL in it - everything else gets typed functions. Doubles
@@ -114,8 +114,10 @@ export class HistoryRepository implements UsageStore, AuditSink, HarnessStateSto
   // --- HarnessStateStore ---
 
   create(input: CreateHarnessTaskInput): HarnessTaskRecord {
-    this.db.exec('BEGIN IMMEDIATE');
+    let inTransaction = false;
     try {
+      this.db.exec('BEGIN IMMEDIATE');
+      inTransaction = true;
       const sequence = this.db.prepare('INSERT INTO harness_task_sequence DEFAULT VALUES').run();
       const id = `TASK-${String(Number(sequence.lastInsertRowid)).padStart(3, '0')}`;
       this.run(
@@ -137,7 +139,7 @@ export class HistoryRepository implements UsageStore, AuditSink, HarnessStateSto
       this.db.exec('COMMIT');
       return this.getHarnessTask(id)!;
     } catch (cause) {
-      this.db.exec('ROLLBACK');
+      if (inTransaction) this.db.exec('ROLLBACK');
       if (cause instanceof DispatcherError) throw cause;
       throw this.historyError(cause);
     }
@@ -158,8 +160,10 @@ export class HistoryRepository implements UsageStore, AuditSink, HarnessStateSto
   }
 
   update(taskId: string, patch: HarnessTaskPatch, event?: HarnessPhaseEvent): HarnessTaskRecord {
-    this.db.exec('BEGIN IMMEDIATE');
+    let inTransaction = false;
     try {
+      this.db.exec('BEGIN IMMEDIATE');
+      inTransaction = true;
       const current = this.getHarnessTask(taskId);
       if (!current) {
         throw new DispatcherError({
@@ -172,6 +176,7 @@ export class HistoryRepository implements UsageStore, AuditSink, HarnessStateSto
       const next = {
         ...current,
         ...patch,
+        metadata: patch.metadata ? { ...current.metadata, ...patch.metadata } : current.metadata,
         errorCode: patch.errorCode === null ? undefined : (patch.errorCode ?? current.errorCode),
       };
       this.run(
@@ -200,22 +205,25 @@ export class HistoryRepository implements UsageStore, AuditSink, HarnessStateSto
       this.db.exec('COMMIT');
       return this.getHarnessTask(taskId)!;
     } catch (cause) {
-      this.db.exec('ROLLBACK');
+      if (inTransaction) this.db.exec('ROLLBACK');
       if (cause instanceof DispatcherError) throw cause;
       throw this.historyError(cause);
     }
   }
 
   delete(taskId: string): boolean {
-    this.db.exec('BEGIN IMMEDIATE');
+    let inTransaction = false;
     try {
+      this.db.exec('BEGIN IMMEDIATE');
+      inTransaction = true;
+      this.db.prepare('DELETE FROM harness_agent_activity WHERE task_id = ?').run(taskId);
       this.db.prepare('DELETE FROM harness_agent_calls WHERE task_id = ?').run(taskId);
       this.db.prepare('DELETE FROM harness_phase_events WHERE task_id = ?').run(taskId);
       const result = this.db.prepare('DELETE FROM harness_tasks WHERE task_id = ?').run(taskId);
       this.db.exec('COMMIT');
       return result.changes > 0;
     } catch (cause) {
-      this.db.exec('ROLLBACK');
+      if (inTransaction) this.db.exec('ROLLBACK');
       throw this.historyError(cause);
     }
   }
@@ -230,6 +238,63 @@ export class HistoryRepository implements UsageStore, AuditSink, HarnessStateSto
         record.durationMs, record.status, record.inputTokens ?? null, record.outputTokens ?? null,
         record.cachedTokens ?? null, record.actualCost ?? null, record.source, record.billingMode],
     );
+  }
+
+  reserveAgentCall(call: ActiveAgentCall, limits: AgentCallLimits): boolean {
+    let inTransaction = false;
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      inTransaction = true;
+      const counts = this.db.prepare(
+        `SELECT
+          (SELECT COUNT(*) FROM harness_agent_calls WHERE task_id = ? AND provider = ?) +
+          (SELECT COUNT(*) FROM harness_agent_activity WHERE task_id = ? AND provider = ?) AS provider_count,
+          (SELECT COUNT(*) FROM harness_agent_calls WHERE task_id = ? AND agent = ?) +
+          (SELECT COUNT(*) FROM harness_agent_activity WHERE task_id = ? AND agent = ?) AS agent_count`,
+      ).get(call.taskId, call.provider, call.taskId, call.provider, call.taskId, call.agent, call.taskId, call.agent) as Record<string, unknown>;
+      const providerCount = Number(counts['provider_count']);
+      const agentCount = Number(counts['agent_count']);
+      if (providerCount >= limits.providerMax || (limits.agentMax !== undefined && agentCount >= limits.agentMax)) {
+        this.db.exec('ROLLBACK');
+        inTransaction = false;
+        return false;
+      }
+      this.db.prepare(
+        'INSERT INTO harness_agent_activity (call_id, task_id, agent, provider, started_at) VALUES (?, ?, ?, ?, ?)',
+      ).run(call.callId, call.taskId, call.agent, call.provider, call.startedAt);
+      this.db.exec('COMMIT');
+      return true;
+    } catch (cause) {
+      if (inTransaction) this.db.exec('ROLLBACK');
+      throw this.historyError(cause);
+    }
+  }
+
+  completeAgentCall(record: AgentCallRecord): void {
+    let inTransaction = false;
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      inTransaction = true;
+      this.db.prepare('DELETE FROM harness_agent_activity WHERE call_id = ?').run(record.callId);
+      this.recordAgentCall(record);
+      this.db.exec('COMMIT');
+    } catch (cause) {
+      if (inTransaction) this.db.exec('ROLLBACK');
+      throw this.historyError(cause);
+    }
+  }
+
+  getActiveAgentCalls(taskId?: string): ActiveAgentCall[] {
+    const rows = taskId
+      ? this.db.prepare('SELECT * FROM harness_agent_activity WHERE task_id = ? ORDER BY started_at ASC').all(taskId)
+      : this.db.prepare('SELECT * FROM harness_agent_activity ORDER BY started_at ASC').all();
+    return (rows as Array<Record<string, unknown>>).map((row) => ({
+      callId: row['call_id'] as string,
+      taskId: row['task_id'] as string,
+      agent: row['agent'] as string,
+      provider: row['provider'] as ActiveAgentCall['provider'],
+      startedAt: row['started_at'] as string,
+    }));
   }
 
   getAgentUsageSummary(taskId: string): AgentUsageSummary {

@@ -46,7 +46,22 @@ describe('HarnessTaskManager', () => {
 
   it('does not resume a completed task', () => {
     const task = tasks.create('Implement feature', 'C:/repo');
+    tasks.enterPhase(task.id, 'WAITING_HUMAN');
     tasks.finish(task.id);
     expect(() => tasks.resume(task.id)).toThrow(/terminal status COMPLETED/);
+  });
+
+  it('does not allow finish to bypass quality and the human gate', () => {
+    const task = tasks.create('Implement feature', 'C:/repo');
+    expect(() => tasks.finish(task.id)).toThrow(/WAITING_HUMAN/);
+  });
+
+  it('preserves an exhausted retry failure instead of rewriting it as blocked', () => {
+    const task = tasks.create('Implement feature', 'C:/repo');
+    tasks.retry(task.id);
+    tasks.retry(task.id);
+    tasks.retry(task.id);
+    const result = tasks.block(task.id, 'FINAL_GATE_STOP');
+    expect(result).toMatchObject({ status: 'FAILED', errorCode: 'MAX_RETRIES_EXCEEDED' });
   });
 });

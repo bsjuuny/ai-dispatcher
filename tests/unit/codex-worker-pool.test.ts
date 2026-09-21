@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { CodexWorkerPool } from '../../src/harness/codex-worker-pool.js';
 import type { AgentRuntime, HarnessAgentRequest, HarnessAgentResult } from '../../src/harness/agent-runtime.js';
 import type { DagTask } from '../../src/harness/dag-scheduler.js';
+import { DispatcherError } from '../../src/models/error.js';
 
 const task = (id: string, dependencies: string[] = []): DagTask => ({
   id,
@@ -54,5 +55,14 @@ describe('CodexWorkerPool', () => {
     });
     expect(result.succeeded).toBe(false);
     expect(result.tasks.map((item) => [item.id, item.state])).toEqual([['T1', 'FAILED'], ['T2', 'SKIPPED']]);
+  });
+
+  it('preserves non-retryable budget and blocked errors for workflow handling', async () => {
+    const runtime: AgentRuntime = {
+      run: async () => { throw new DispatcherError({ code: 'BUDGET_EXCEEDED', message: 'limit', retryable: false }); },
+    };
+    await expect(new CodexWorkerPool(runtime).execute({
+      tasks: [task('T1')], workerCount: 1, timeoutMs: 1000, resolveWorkingDirectory: () => 'C:/worktree',
+    })).rejects.toMatchObject({ code: 'BUDGET_EXCEEDED' });
   });
 });

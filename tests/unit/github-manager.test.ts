@@ -16,7 +16,7 @@ describe('GitHubManager', () => {
       .mockResolvedValueOnce(ok('pushed'))
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok('https://github.test/pr/7'))
-      .mockResolvedValueOnce(ok(JSON.stringify({ number: 7, url: 'https://github.test/pr/7', state: 'OPEN', headRefName: 'ai/TASK-001/integration', baseRefName: 'main' })));
+      .mockResolvedValueOnce(ok(JSON.stringify({ number: 7, url: 'https://github.test/pr/7', state: 'OPEN', headRefName: 'ai/TASK-001/integration', baseRefName: 'main', headRefOid: 'abc123' })));
     const manager = new GitHubManager('C:/repo', execute);
 
     expect(await manager.commitIntegration('TASK-001', 'Fix login')).toBe('abc123');
@@ -41,18 +41,47 @@ describe('GitHubManager', () => {
       { name: 'test', state: 'PENDING', bucket: 'pending', link: 'https://ci/test' },
     ])));
     const manager = new GitHubManager('C:/repo', execute);
-    await expect(manager.mergeAfterHumanApproval('TASK-001', 'ai/TASK-001/integration')).rejects.toMatchObject({ code: 'CI_CHECK_PENDING' });
+    await expect(manager.mergeAfterHumanApproval('TASK-001', 'ai/TASK-001/integration', 'abc123')).rejects.toMatchObject({ code: 'CI_CHECK_PENDING' });
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
   it('merges only after passing checks and detects protected auto-merge paths', async () => {
     const execute = vi.fn()
       .mockResolvedValueOnce(ok(JSON.stringify([{ name: 'build', state: 'SUCCESS', bucket: 'pass' }])))
+      .mockResolvedValueOnce(ok(JSON.stringify({ number: 7, url: 'https://github.test/pr/7', state: 'OPEN', headRefName: 'ai/TASK-001/integration', baseRefName: 'main', headRefOid: 'abc123' })))
       .mockResolvedValueOnce(ok('merged'));
     const manager = new GitHubManager('C:/repo', execute);
-    await manager.mergeAfterHumanApproval('TASK-001', 'ai/TASK-001/integration');
-    expect(execute).toHaveBeenLastCalledWith(expect.objectContaining({ file: 'gh', args: ['pr', 'merge', 'ai/TASK-001/integration', '--merge'] }));
+    await manager.mergeAfterHumanApproval('TASK-001', 'ai/TASK-001/integration', 'abc123', 'main');
+    expect(execute).toHaveBeenLastCalledWith(expect.objectContaining({ file: 'gh', args: ['pr', 'merge', 'ai/TASK-001/integration', '--merge', '--match-head-commit', 'abc123'] }));
     expect(GitHubManager.permitsAutoMerge(['src/a.ts'], ['auth/**'])).toBe(true);
     expect(GitHubManager.permitsAutoMerge(['auth/session.ts'], ['auth/**'])).toBe(false);
+  });
+
+  it('parses pending checks from gh exit code 8 instead of treating them as a command failure', async () => {
+    const execute = vi.fn().mockResolvedValue({ ...ok(JSON.stringify([
+      { name: 'build', state: 'PENDING', bucket: 'pending' },
+    ])), exitCode: 8 });
+    const checks = await new GitHubManager('C:/repo', execute).requiredChecks('ai/TASK-001/integration');
+    expect(checks).toEqual([{ name: 'build', state: 'PENDING', bucket: 'pending', link: undefined }]);
+  });
+
+  it('uses gh watch for bounded CI waiting and reports timeout as pending', async () => {
+    const execute = vi.fn().mockResolvedValue({ ...ok(), exitCode: null, timedOut: true });
+    await expect(new GitHubManager('C:/repo', execute).waitForRequiredChecks('ai/TASK-001/integration', 5000))
+      .rejects.toMatchObject({ code: 'CI_CHECK_PENDING' });
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+      args: expect.arrayContaining(['pr', 'checks', '--watch', '--interval', '10']),
+      timeoutMs: 5000,
+    }));
+  });
+
+  it('fails closed when the pull request head changed after review', async () => {
+    const execute = vi.fn()
+      .mockResolvedValueOnce(ok(JSON.stringify([{ name: 'build', state: 'SUCCESS', bucket: 'pass' }])))
+      .mockResolvedValueOnce(ok(JSON.stringify({ number: 7, url: 'https://github.test/pr/7', state: 'OPEN', headRefName: 'ai/TASK-001/integration', baseRefName: 'main', headRefOid: 'changed' })));
+    await expect(new GitHubManager('C:/repo', execute).mergeAfterHumanApproval(
+      'TASK-001', 'ai/TASK-001/integration', 'reviewed', 'main',
+    )).rejects.toMatchObject({ code: 'SAFETY_POLICY_VIOLATION' });
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 });

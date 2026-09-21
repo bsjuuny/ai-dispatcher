@@ -97,7 +97,10 @@ describe('HarnessWorkflow', () => {
     expect(readFileSync(join(repo, '.ai-harness', 'artifacts', result.id, 'plan.json'), 'utf8')).not.toContain('Fix typo');
 
     resumeChecks = true;
-    tasks.recordMetadata(result.id, { delivery: { branch: `ai/${result.id}/integration`, integrationPath: join(worktrees, result.id, 'integration') } });
+    tasks.recordMetadata(result.id, {
+      delivery: { branch: `ai/${result.id}/integration`, integrationPath: join(worktrees, result.id, 'integration'), revision: 'abc123', baseBranch: 'master', state: 'PR_CREATED' },
+      pullRequest: { number: 7, url: 'https://github.test/pr/7', state: 'OPEN' },
+    });
     tasks.fail(result.id, 'CI_CHECK_PENDING');
     const resumed = await workflow.resume(result.id);
     expect(resumed.phase).toBe('WAITING_HUMAN');

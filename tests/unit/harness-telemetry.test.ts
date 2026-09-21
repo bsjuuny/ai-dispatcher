@@ -4,6 +4,8 @@ import { HistoryRepository } from '../../src/history/repository.js';
 import { HarnessTaskManager } from '../../src/harness/task-manager.js';
 import { TelemetryManager, checkCallBudget } from '../../src/harness/telemetry.js';
 import { parseHarnessConfig } from '../../src/harness/config.js';
+import { InstrumentedAgentRuntime } from '../../src/harness/instrumented-runtime.js';
+import type { AgentRuntime } from '../../src/harness/agent-runtime.js';
 
 describe('Harness telemetry', () => {
   let history: HistoryRepository;
@@ -54,5 +56,29 @@ describe('Harness telemetry', () => {
     const handle = telemetry.start('TASK-001', 'claude-architect', 'claude');
     telemetry.finish(handle, { status: 'success', source: 'UNAVAILABLE', billingMode: 'SUBSCRIPTION' });
     expect(checkCallBudget('claude', telemetry.summary('TASK-001'), budget)).toMatchObject({ allowed: false });
+  });
+
+  it('reserves parallel call budget before an agent finishes', () => {
+    const budget = parseHarnessConfig({ budget: { codex: { max_calls: 1 } } }).budget;
+    telemetry.startWithBudget('TASK-001', 'codex-1', 'codex', budget);
+    expect(() => telemetry.startWithBudget('TASK-001', 'codex-2', 'codex', budget)).toThrow(/budget exhausted/);
+    expect(telemetry.active('TASK-001')).toHaveLength(1);
+  });
+
+  it('enforces the separate specialist call limit', () => {
+    const budget = parseHarnessConfig({ budget: { claude: { max_calls: 3 }, specialist: { enabled: true, max_calls: 1 } } }).budget;
+    const handle = telemetry.startWithBudget('TASK-001', 'claude-specialist', 'claude', budget);
+    telemetry.finish(handle, { status: 'success', source: 'UNAVAILABLE', billingMode: 'SUBSCRIPTION' });
+    expect(() => telemetry.startWithBudget('TASK-001', 'claude-specialist', 'claude', budget)).toThrow(/budget exhausted/);
+  });
+
+  it('enforces the overall task duration before starting another agent', async () => {
+    const inner: AgentRuntime = { run: async () => { throw new Error('must not run'); } };
+    const budget = parseHarnessConfig({}).budget;
+    const runtime = new InstrumentedAgentRuntime('TASK-001', inner, telemetry, budget, undefined, Date.now() - 1);
+    await expect(runtime.run({
+      name: 'codex-1', kind: 'codex', workingDirectory: 'C:/repo', prompt: 'task', timeoutMs: 1000,
+    })).rejects.toMatchObject({ code: 'TASK_TIMEOUT' });
+    expect(telemetry.active('TASK-001')).toHaveLength(0);
   });
 });

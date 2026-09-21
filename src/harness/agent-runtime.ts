@@ -55,6 +55,13 @@ export class HerdrAgentRuntime implements AgentRuntime {
         retryable: true,
       });
     }
+    if (settled.state === 'working' || settled.state === 'unknown') {
+      throw new DispatcherError({
+        code: 'AGENT_FAILED',
+        message: `${request.name} did not reach a settled completion state (${settled.state}).`,
+        retryable: true,
+      });
+    }
     return {
       name: request.name,
       state: settled.state,

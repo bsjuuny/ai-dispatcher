@@ -33,7 +33,7 @@ quality:
 
 git:
   base_branch: main
-  worktree_directory: worktrees
+  worktree_directory: ../.ai-harness-worktrees
 
 pull_request:
   auto_create: true

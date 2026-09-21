@@ -1,7 +1,7 @@
 import { DispatcherError, isDispatcherError } from '../models/error.js';
 import type { AgentRuntime, HarnessAgentRequest, HarnessAgentResult } from './agent-runtime.js';
 import type { HarnessConfig } from './config.js';
-import { checkCallBudget, type TelemetryManager } from './telemetry.js';
+import type { TelemetryManager } from './telemetry.js';
 import type { HarnessTaskLog } from './task-log.js';
 
 export class InstrumentedAgentRuntime implements AgentRuntime {
@@ -11,17 +11,18 @@ export class InstrumentedAgentRuntime implements AgentRuntime {
     private readonly telemetry: TelemetryManager,
     private readonly budget: HarnessConfig['budget'],
     private readonly log?: HarnessTaskLog,
+    private readonly deadlineMs?: number,
   ) {}
 
   async run(request: HarnessAgentRequest): Promise<HarnessAgentResult> {
     const provider = request.kind;
-    const allowed = checkCallBudget(provider, this.telemetry.summary(this.taskId), this.budget);
-    if (!allowed.allowed) {
-      throw new DispatcherError({ code: 'BUDGET_EXCEEDED', message: allowed.reason ?? 'Agent budget exhausted.', retryable: false, taskId: this.taskId });
+    const remainingMs = this.deadlineMs === undefined ? request.timeoutMs : this.deadlineMs - Date.now();
+    if (remainingMs <= 0) {
+      throw new DispatcherError({ code: 'TASK_TIMEOUT', message: 'Harness task duration budget exhausted.', retryable: false, taskId: this.taskId });
     }
-    const handle = this.telemetry.start(this.taskId, request.name, provider);
+    const handle = this.telemetry.startWithBudget(this.taskId, request.name, provider, this.budget);
     try {
-      const result = await this.inner.run(request);
+      const result = await this.inner.run({ ...request, timeoutMs: Math.min(request.timeoutMs, remainingMs) });
       this.telemetry.finish(handle, {
         status: result.state === 'blocked' ? 'blocked' : result.state === 'failed' ? 'failed' : 'success',
         source: 'UNAVAILABLE',

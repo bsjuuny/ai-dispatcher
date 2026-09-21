@@ -104,6 +104,36 @@ export class HarnessTaskManager {
   }
 
   finish(taskId: string): HarnessTaskRecord {
+    const current = this.get(taskId);
+    if (current.phase !== 'WAITING_HUMAN') {
+      throw new DispatcherError({
+        code: 'HUMAN_APPROVAL_REQUIRED',
+        message: `${taskId} can only be finished from WAITING_HUMAN.`,
+        retryable: false,
+        taskId,
+      });
+    }
+    if (current.metadata['pullRequest']) {
+      throw new DispatcherError({
+        code: 'HUMAN_APPROVAL_REQUIRED',
+        message: `${taskId} has a pull request and must be completed by the verified merge action.`,
+        retryable: false,
+        taskId,
+      });
+    }
+    return this.enterPhase(taskId, 'DONE', { status: 'COMPLETED' });
+  }
+
+  finishAfterVerifiedMerge(taskId: string): HarnessTaskRecord {
+    const current = this.get(taskId);
+    if (current.phase !== 'WAITING_HUMAN' || !current.metadata['pullRequest']) {
+      throw new DispatcherError({
+        code: 'HUMAN_APPROVAL_REQUIRED',
+        message: `${taskId} is not waiting for a verified pull-request merge.`,
+        retryable: false,
+        taskId,
+      });
+    }
     return this.enterPhase(taskId, 'DONE', { status: 'COMPLETED' });
   }
 
@@ -118,7 +148,8 @@ export class HarnessTaskManager {
   }
 
   block(taskId: string, errorCode: string, budget = false): HarnessTaskRecord {
-    this.get(taskId);
+    const current = this.get(taskId);
+    if (current.status === 'FAILED') return current;
     return this.store.update(taskId, {
       status: budget ? 'BUDGET_BLOCKED' : 'BLOCKED',
       updatedAt: this.now().toISOString(),
@@ -127,19 +158,28 @@ export class HarnessTaskManager {
   }
 
   recordRoute(taskId: string, route: Record<string, unknown> & { complexity: string }): HarnessTaskRecord {
-    const current = this.get(taskId);
+    this.get(taskId);
     return this.store.update(taskId, {
       route: route.complexity,
-      metadata: { ...current.metadata, route },
+      metadata: { route },
       updatedAt: this.now().toISOString(),
     });
   }
 
   recordMetadata(taskId: string, metadata: Record<string, unknown>): HarnessTaskRecord {
+    this.get(taskId);
+    return this.store.update(taskId, {
+      metadata,
+      updatedAt: this.now().toISOString(),
+    });
+  }
+
+  wait(taskId: string, errorCode?: string): HarnessTaskRecord {
     const current = this.get(taskId);
     return this.store.update(taskId, {
-      metadata: { ...current.metadata, ...metadata },
+      status: 'WAITING',
       updatedAt: this.now().toISOString(),
+      errorCode: errorCode ?? current.errorCode ?? null,
     });
   }
 

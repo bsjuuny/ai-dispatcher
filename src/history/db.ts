@@ -107,6 +107,15 @@ const MIGRATIONS: string[] = [
     FOREIGN KEY (task_id) REFERENCES harness_tasks (task_id)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_harness_agent_calls_task_id ON harness_agent_calls (task_id, started_at)`,
+  `CREATE TABLE IF NOT EXISTS harness_agent_activity (
+    call_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    FOREIGN KEY (task_id) REFERENCES harness_tasks (task_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_harness_agent_activity_task_id ON harness_agent_activity (task_id, started_at)`,
 ];
 
 export function openDatabase(path: string): DatabaseSync {
@@ -114,6 +123,7 @@ export function openDatabase(path: string): DatabaseSync {
     mkdirSync(dirname(path), { recursive: true });
   }
   const db = new DatabaseSync(path);
+  db.exec('PRAGMA busy_timeout = 5000;');
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
   for (const migration of MIGRATIONS) {

@@ -1,4 +1,5 @@
 import type { AgentRuntime } from './agent-runtime.js';
+import { isDispatcherError } from '../models/error.js';
 import { DagScheduler, type DagTask, type DagTaskSnapshot } from './dag-scheduler.js';
 
 export interface CodexWorkAssignment {
@@ -26,6 +27,7 @@ export class CodexWorkerPool {
   }): Promise<CodexWorkerPoolResult> {
     const scheduler = new DagScheduler(input.tasks);
     let maxParallelObserved = 0;
+    let fatalError: unknown;
     while (!scheduler.isComplete()) {
       const ready = scheduler.ready(input.workerCount);
       if (ready.length === 0) break;
@@ -48,10 +50,12 @@ export class CodexWorkerPool {
             scheduler.succeed(task.id);
           } catch (cause) {
             scheduler.fail(task.id, cause instanceof Error ? cause.message : String(cause));
+            if (isDispatcherError(cause) && !cause.retryable) fatalError ??= cause;
           }
           input.onUpdate?.(scheduler.snapshot());
         }),
       );
+      if (fatalError) throw fatalError;
     }
     return {
       tasks: scheduler.snapshot(),

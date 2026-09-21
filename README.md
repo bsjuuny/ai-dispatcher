@@ -65,7 +65,7 @@ harness dashboard [--project .] [--port 4321]
 
 State and structured artifacts live under `.ai-harness/`. Raw task requests are not persisted: the state database stores their SHA-256 and length, while planning, quality, review, final-gate, and CI artifacts store only the structured evidence needed by later phases. JSON state writes are transactional in SQLite; JSON artifact writes use temporary files followed by atomic rename.
 
-`harness resume` safely resumes a persisted PR/CI checkpoint by re-reading required GitHub checks and returning to the human merge gate without repeating implementation. Earlier interrupted phases deliberately become `RESUME_CONTEXT_MISSING` when the non-persisted original requirement or a safe agent checkpoint cannot be reconstructed; re-submit or explicitly retry instead of silently guessing missing context.
+`harness resume` safely resumes persisted delivery checkpoints from commit, push, PR creation, or CI by completing only the missing idempotent delivery steps and re-reading required GitHub checks. `harness retry` now invokes that same continuation instead of merely changing a status label. Earlier interrupted implementation phases deliberately become `RESUME_CONTEXT_MISSING` when the non-persisted original requirement or a safe agent checkpoint cannot be reconstructed; re-submit the task instead of silently guessing missing context.
 
 ### Dashboard
 
@@ -73,7 +73,7 @@ State and structured artifacts live under `.ai-harness/`. Raw task requests are 
 harness dashboard --project . --port 4321
 ```
 
-Open `http://127.0.0.1:4321`. The dependency-free TypeScript/Node dashboard reuses this repository's stack rather than introducing Next.js. It provides Overview, Tasks, Task Detail, Agents, Usage, and Settings views; SSE updates every three seconds. The common actions are Run, Retry, and Merge. Merge remains disabled until required GitHub checks pass and always requires an explicit browser confirmation. V4 never performs production deployment or automatic merge.
+Open `http://127.0.0.1:4321`. The dependency-free TypeScript/Node dashboard reuses this repository's stack rather than introducing Next.js. It provides Overview, Tasks, Task Detail, Agents, Usage, and Settings views; SSE updates every three seconds from persisted in-flight agent activity. Mutating requests require a per-process CSRF token and a loopback Host. The common actions are Run, Retry, and Merge. Merge remains disabled until required GitHub checks pass, is pinned to the reviewed commit SHA, and always requires an explicit browser confirmation. V4 never performs production deployment or automatic merge.
 
 ### Harness architecture and workflow
 

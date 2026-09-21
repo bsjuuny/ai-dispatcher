@@ -57,7 +57,7 @@ const HarnessConfigSchema = z.object({
     build: CommandSchema.optional(),
     security: CommandSchema.optional(),
   }).default({}),
-  git: z.object({ base_branch: z.string().default('main'), worktree_directory: z.string().default('worktrees') }).default({ base_branch: 'main', worktree_directory: 'worktrees' }),
+  git: z.object({ base_branch: z.string().default('main'), worktree_directory: z.string().default('../.ai-harness-worktrees') }).default({ base_branch: 'main', worktree_directory: '../.ai-harness-worktrees' }),
   pull_request: z.object({
     auto_create: z.boolean().default(true),
     auto_merge: z.boolean().default(false),

@@ -34,13 +34,13 @@ for (const command of ['status', 'retry', 'abort', 'finish'] as const) {
     .command(`${command} <taskId>`)
     .option('--project <path>', 'Project root', '.')
     .option('--json', 'Output JSON')
-    .action((taskId: string, options) => {
+    .action(async (taskId: string, options) => {
       const ctx = createHarnessContext(resolve(options.project));
       const task =
         command === 'status'
           ? ctx.tasks.get(taskId)
           : command === 'retry'
-              ? ctx.tasks.retry(taskId)
+              ? await ctx.workflow.retry(taskId)
               : command === 'abort'
                 ? ctx.tasks.abort(taskId)
                 : ctx.tasks.finish(taskId);

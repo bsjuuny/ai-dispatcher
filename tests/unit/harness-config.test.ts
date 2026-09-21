@@ -11,6 +11,7 @@ describe('HarnessConfig', () => {
     expect(config.jev.api_key_env).toBe('TYPESAFE_API_KEY');
     expect(config.pull_request.auto_create).toBe(true);
     expect(config.pull_request.auto_merge).toBe(false);
+    expect(config.git.worktree_directory).toBe('../.ai-harness-worktrees');
   });
 
   it('caps configured worker pools at three', () => {
