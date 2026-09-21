@@ -58,6 +58,37 @@ const MIGRATIONS: string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_executions_task_id ON executions (task_id)`,
   `CREATE INDEX IF NOT EXISTS idx_audit_events_task_id ON audit_events (task_id)`,
+  `CREATE TABLE IF NOT EXISTS harness_task_sequence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT
+  )`,
+  `CREATE TABLE IF NOT EXISTS harness_tasks (
+    task_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    request_length INTEGER NOT NULL,
+    project_root TEXT NOT NULL,
+    status TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    last_safe_phase TEXT NOT NULL,
+    route TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    max_retry INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    error_code TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}'
+  )`,
+  `CREATE TABLE IF NOT EXISTS harness_phase_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    from_phase TEXT NOT NULL,
+    to_phase TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (task_id) REFERENCES harness_tasks (task_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_harness_tasks_updated_at ON harness_tasks (updated_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_harness_phase_events_task_id ON harness_phase_events (task_id, event_id)`,
 ];
 
 export function openDatabase(path: string): DatabaseSync {
@@ -75,4 +106,8 @@ export function openDatabase(path: string): DatabaseSync {
 
 export function defaultHistoryDbPath(projectRoot: string): string {
   return `${projectRoot}/.dispatcher/history.sqlite`;
+}
+
+export function defaultHarnessStateDbPath(projectRoot: string): string {
+  return `${projectRoot}/.ai-harness/state.sqlite`;
 }

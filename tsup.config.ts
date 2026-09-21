@@ -7,6 +7,7 @@ import { defineConfig } from 'tsup';
 export default defineConfig({
   entry: {
     cli: 'src/cli/index.ts',
+    'harness-cli': 'src/harness/cli.ts',
     index: 'src/index.ts',
   },
   format: ['esm'],

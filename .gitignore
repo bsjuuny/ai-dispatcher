@@ -3,6 +3,7 @@ dist/
 coverage/
 *.log
 .dispatcher/
+.ai-harness/
 portable-*/
 .env
 .env.local

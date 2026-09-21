@@ -4,13 +4,23 @@ import type { ProviderId } from '../models/provider.js';
 import type { AuditEvent, AuditSink } from '../logging/audit.js';
 import type { UsageRecord, UsageStore } from '../routing/usage-store.js';
 import { DispatcherError } from '../models/error.js';
+import type { HarnessStateStore } from '../harness/state-store.js';
+import type {
+  CreateHarnessTaskInput,
+  HarnessPhase,
+  HarnessPhaseEvent,
+  HarnessTaskPatch,
+  HarnessTaskQuery,
+  HarnessTaskRecord,
+  HarnessTaskStatus,
+} from '../harness/types.js';
 
 /**
  * The only file with raw SQL in it - everything else gets typed functions. Doubles
  * as the SQLite-backed implementation of UsageStore and AuditSink so the routing and
  * logging layers never need to know history is SQLite-backed at all.
  */
-export class HistoryRepository implements UsageStore, AuditSink {
+export class HistoryRepository implements UsageStore, AuditSink, HarnessStateStore {
   constructor(private readonly db: DatabaseSync) {}
 
   recordTaskCreated(task: DispatcherTask): void {
@@ -96,6 +106,121 @@ export class HistoryRepository implements UsageStore, AuditSink {
     return stmt.all(taskId) as Array<Record<string, unknown>>;
   }
 
+  // --- HarnessStateStore ---
+
+  create(input: CreateHarnessTaskInput): HarnessTaskRecord {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const sequence = this.db.prepare('INSERT INTO harness_task_sequence DEFAULT VALUES').run();
+      const id = `TASK-${String(Number(sequence.lastInsertRowid)).padStart(3, '0')}`;
+      this.run(
+        `INSERT INTO harness_tasks (
+          task_id, title, request_hash, request_length, project_root, status, phase,
+          last_safe_phase, retry_count, max_retry, created_at, updated_at, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, 'CREATED', 'CREATED', 'CREATED', 0, ?, ?, ?, '{}')`,
+        [
+          id,
+          `Task ${id}`,
+          input.requestHash,
+          input.requestLength,
+          input.projectRoot,
+          input.maxRetry,
+          input.createdAt,
+          input.createdAt,
+        ],
+      );
+      this.db.exec('COMMIT');
+      return this.getHarnessTask(id)!;
+    } catch (cause) {
+      this.db.exec('ROLLBACK');
+      if (cause instanceof DispatcherError) throw cause;
+      throw this.historyError(cause);
+    }
+  }
+
+  get(taskId: string): HarnessTaskRecord | undefined {
+    return this.getHarnessTask(taskId);
+  }
+
+  list(query: HarnessTaskQuery = {}): HarnessTaskRecord[] {
+    const limit = query.limit ?? 100;
+    const rows = query.status
+      ? this.db
+          .prepare('SELECT * FROM harness_tasks WHERE status = ? ORDER BY updated_at DESC LIMIT ?')
+          .all(query.status, limit)
+      : this.db.prepare('SELECT * FROM harness_tasks ORDER BY updated_at DESC LIMIT ?').all(limit);
+    return (rows as Array<Record<string, unknown>>).map(toHarnessTask);
+  }
+
+  update(taskId: string, patch: HarnessTaskPatch, event?: HarnessPhaseEvent): HarnessTaskRecord {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const current = this.getHarnessTask(taskId);
+      if (!current) {
+        throw new DispatcherError({
+          code: 'TASK_NOT_FOUND',
+          message: `Harness task not found: ${taskId}`,
+          retryable: false,
+          taskId,
+        });
+      }
+      const next = {
+        ...current,
+        ...patch,
+        errorCode: patch.errorCode === null ? undefined : (patch.errorCode ?? current.errorCode),
+      };
+      this.run(
+        `UPDATE harness_tasks SET title = ?, status = ?, phase = ?, last_safe_phase = ?, route = ?,
+         retry_count = ?, updated_at = ?, error_code = ?, metadata_json = ? WHERE task_id = ?`,
+        [
+          next.title,
+          next.status,
+          next.phase,
+          next.lastSafePhase,
+          next.route ?? null,
+          next.retry,
+          next.updatedAt,
+          next.errorCode ?? null,
+          JSON.stringify(next.metadata),
+          taskId,
+        ],
+      );
+      if (event) {
+        this.run(
+          `INSERT INTO harness_phase_events (task_id, from_phase, to_phase, status, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+          [event.taskId, event.fromPhase, event.toPhase, event.status, event.createdAt],
+        );
+      }
+      this.db.exec('COMMIT');
+      return this.getHarnessTask(taskId)!;
+    } catch (cause) {
+      this.db.exec('ROLLBACK');
+      if (cause instanceof DispatcherError) throw cause;
+      throw this.historyError(cause);
+    }
+  }
+
+  delete(taskId: string): boolean {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('DELETE FROM harness_phase_events WHERE task_id = ?').run(taskId);
+      const result = this.db.prepare('DELETE FROM harness_tasks WHERE task_id = ?').run(taskId);
+      this.db.exec('COMMIT');
+      return result.changes > 0;
+    } catch (cause) {
+      this.db.exec('ROLLBACK');
+      throw this.historyError(cause);
+    }
+  }
+
+  private getHarnessTask(taskId: string): HarnessTaskRecord | undefined {
+    const row = this.db.prepare('SELECT * FROM harness_tasks WHERE task_id = ?').get(taskId) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? toHarnessTask(row) : undefined;
+  }
+
   // --- UsageStore ---
 
   async record(entry: UsageRecord): Promise<void> {
@@ -162,4 +287,33 @@ export class HistoryRepository implements UsageStore, AuditSink {
       });
     }
   }
+
+  private historyError(cause: unknown): DispatcherError {
+    return new DispatcherError({
+      code: 'HISTORY_WRITE_FAILED',
+      message: `History write failed: ${(cause as Error).message}`,
+      cause,
+      retryable: false,
+    });
+  }
+}
+
+function toHarnessTask(row: Record<string, unknown>): HarnessTaskRecord {
+  return {
+    id: row['task_id'] as string,
+    title: row['title'] as string,
+    requestHash: row['request_hash'] as string,
+    requestLength: row['request_length'] as number,
+    projectRoot: row['project_root'] as string,
+    status: row['status'] as HarnessTaskStatus,
+    phase: row['phase'] as HarnessPhase,
+    lastSafePhase: row['last_safe_phase'] as HarnessPhase,
+    route: (row['route'] as string | null) ?? undefined,
+    retry: row['retry_count'] as number,
+    maxRetry: row['max_retry'] as number,
+    createdAt: row['created_at'] as string,
+    updatedAt: row['updated_at'] as string,
+    errorCode: (row['error_code'] as string | null) ?? undefined,
+    metadata: JSON.parse(row['metadata_json'] as string) as Record<string, unknown>,
+  };
 }

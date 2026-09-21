@@ -6,7 +6,8 @@
   "license": "UNLICENSED",
   "private": true,
   "bin": {
-    "ai-dispatcher": "dist/cli.js"
+    "ai-dispatcher": "dist/cli.js",
+    "harness": "dist/harness-cli.js"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
