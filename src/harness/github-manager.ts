@@ -201,6 +201,7 @@ function parseChecksOutcome(outcome: Awaited<ReturnType<ProcessExecutor>>): CiCh
       // The command error below includes stderr/stdout without pretending invalid output is an empty check set.
     }
   }
+  if (/no (?:required )?checks? (?:reported|found)/i.test(`${outcome.stderr}\n${outcome.stdout}`)) return [];
   if (outcome.exitCode === 0 && !source) return [];
   throw error('CI_CHECK_FAILED', outcome.stderr || outcome.stdout || `GitHub checks exited with code ${outcome.exitCode}.`, true);
 }

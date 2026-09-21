@@ -75,6 +75,13 @@ describe('GitHubManager', () => {
     }));
   });
 
+  it('treats an explicit no-required-checks response as an empty successful set', async () => {
+    const execute = vi.fn().mockResolvedValue({
+      ...ok(), exitCode: 1, stderr: "no required checks reported on the 'feature' branch",
+    });
+    await expect(new GitHubManager('C:/repo', execute).requiredChecks('ai/TASK-001/integration')).resolves.toEqual([]);
+  });
+
   it('fails closed when the pull request head changed after review', async () => {
     const execute = vi.fn()
       .mockResolvedValueOnce(ok(JSON.stringify([{ name: 'build', state: 'SUCCESS', bucket: 'pass' }])))

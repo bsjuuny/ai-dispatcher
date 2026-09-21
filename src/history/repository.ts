@@ -137,6 +137,7 @@ export class HistoryRepository implements UsageStore, AuditSink, HarnessStateSto
         ],
       );
       this.db.exec('COMMIT');
+      inTransaction = false;
       return this.getHarnessTask(id)!;
     } catch (cause) {
       if (inTransaction) this.db.exec('ROLLBACK');
@@ -203,6 +204,7 @@ export class HistoryRepository implements UsageStore, AuditSink, HarnessStateSto
         );
       }
       this.db.exec('COMMIT');
+      inTransaction = false;
       return this.getHarnessTask(taskId)!;
     } catch (cause) {
       if (inTransaction) this.db.exec('ROLLBACK');
@@ -221,6 +223,7 @@ export class HistoryRepository implements UsageStore, AuditSink, HarnessStateSto
       this.db.prepare('DELETE FROM harness_phase_events WHERE task_id = ?').run(taskId);
       const result = this.db.prepare('DELETE FROM harness_tasks WHERE task_id = ?').run(taskId);
       this.db.exec('COMMIT');
+      inTransaction = false;
       return result.changes > 0;
     } catch (cause) {
       if (inTransaction) this.db.exec('ROLLBACK');
@@ -263,6 +266,7 @@ export class HistoryRepository implements UsageStore, AuditSink, HarnessStateSto
         'INSERT INTO harness_agent_activity (call_id, task_id, agent, provider, started_at) VALUES (?, ?, ?, ?, ?)',
       ).run(call.callId, call.taskId, call.agent, call.provider, call.startedAt);
       this.db.exec('COMMIT');
+      inTransaction = false;
       return true;
     } catch (cause) {
       if (inTransaction) this.db.exec('ROLLBACK');
@@ -278,6 +282,7 @@ export class HistoryRepository implements UsageStore, AuditSink, HarnessStateSto
       this.db.prepare('DELETE FROM harness_agent_activity WHERE call_id = ?').run(record.callId);
       this.recordAgentCall(record);
       this.db.exec('COMMIT');
+      inTransaction = false;
     } catch (cause) {
       if (inTransaction) this.db.exec('ROLLBACK');
       throw this.historyError(cause);
