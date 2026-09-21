@@ -89,6 +89,24 @@ const MIGRATIONS: string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_harness_tasks_updated_at ON harness_tasks (updated_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_harness_phase_events_task_id ON harness_phase_events (task_id, event_id)`,
+  `CREATE TABLE IF NOT EXISTS harness_agent_calls (
+    call_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cached_tokens INTEGER,
+    actual_cost REAL,
+    source TEXT NOT NULL,
+    billing_mode TEXT NOT NULL,
+    FOREIGN KEY (task_id) REFERENCES harness_tasks (task_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_harness_agent_calls_task_id ON harness_agent_calls (task_id, started_at)`,
 ];
 
 export function openDatabase(path: string): DatabaseSync {

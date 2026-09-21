@@ -14,13 +14,14 @@ import type {
   HarnessTaskRecord,
   HarnessTaskStatus,
 } from '../harness/types.js';
+import type { AgentCallRecord, AgentUsageSummary, HarnessTelemetryStore } from '../harness/telemetry.js';
 
 /**
  * The only file with raw SQL in it - everything else gets typed functions. Doubles
  * as the SQLite-backed implementation of UsageStore and AuditSink so the routing and
  * logging layers never need to know history is SQLite-backed at all.
  */
-export class HistoryRepository implements UsageStore, AuditSink, HarnessStateStore {
+export class HistoryRepository implements UsageStore, AuditSink, HarnessStateStore, HarnessTelemetryStore {
   constructor(private readonly db: DatabaseSync) {}
 
   recordTaskCreated(task: DispatcherTask): void {
@@ -204,6 +205,7 @@ export class HistoryRepository implements UsageStore, AuditSink, HarnessStateSto
   delete(taskId: string): boolean {
     this.db.exec('BEGIN IMMEDIATE');
     try {
+      this.db.prepare('DELETE FROM harness_agent_calls WHERE task_id = ?').run(taskId);
       this.db.prepare('DELETE FROM harness_phase_events WHERE task_id = ?').run(taskId);
       const result = this.db.prepare('DELETE FROM harness_tasks WHERE task_id = ?').run(taskId);
       this.db.exec('COMMIT');
@@ -212,6 +214,45 @@ export class HistoryRepository implements UsageStore, AuditSink, HarnessStateSto
       this.db.exec('ROLLBACK');
       throw this.historyError(cause);
     }
+  }
+
+  recordAgentCall(record: AgentCallRecord): void {
+    this.run(
+      `INSERT INTO harness_agent_calls (
+        call_id, task_id, agent, provider, started_at, finished_at, duration_ms, status,
+        input_tokens, output_tokens, cached_tokens, actual_cost, source, billing_mode
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [record.callId, record.taskId, record.agent, record.provider, record.startedAt, record.finishedAt,
+        record.durationMs, record.status, record.inputTokens ?? null, record.outputTokens ?? null,
+        record.cachedTokens ?? null, record.actualCost ?? null, record.source, record.billingMode],
+    );
+  }
+
+  getAgentUsageSummary(taskId: string): AgentUsageSummary {
+    const row = this.db.prepare(
+      `SELECT COUNT(*) AS total_calls,
+        COALESCE(SUM(duration_ms), 0) AS total_duration_ms,
+        SUM(CASE WHEN provider = 'claude' THEN 1 ELSE 0 END) AS claude_calls,
+        SUM(CASE WHEN provider = 'codex' THEN 1 ELSE 0 END) AS codex_calls,
+        SUM(CASE WHEN provider = 'jev' THEN 1 ELSE 0 END) AS jev_calls,
+        SUM(input_tokens) AS input_tokens,
+        SUM(output_tokens) AS output_tokens,
+        SUM(cached_tokens) AS cached_tokens,
+        SUM(actual_cost) AS actual_cost
+       FROM harness_agent_calls WHERE task_id = ?`,
+    ).get(taskId) as Record<string, unknown>;
+    return {
+      taskId,
+      totalCalls: Number(row['total_calls']),
+      totalDurationMs: Number(row['total_duration_ms']),
+      claudeCalls: Number(row['claude_calls']),
+      codexCalls: Number(row['codex_calls']),
+      jevCalls: Number(row['jev_calls']),
+      inputTokens: nullableNumber(row['input_tokens']),
+      outputTokens: nullableNumber(row['output_tokens']),
+      cachedTokens: nullableNumber(row['cached_tokens']),
+      actualCost: nullableNumber(row['actual_cost']),
+    };
   }
 
   private getHarnessTask(taskId: string): HarnessTaskRecord | undefined {
@@ -316,4 +357,8 @@ function toHarnessTask(row: Record<string, unknown>): HarnessTaskRecord {
     errorCode: (row['error_code'] as string | null) ?? undefined,
     metadata: JSON.parse(row['metadata_json'] as string) as Record<string, unknown>,
   };
+}
+
+function nullableNumber(value: unknown): number | null {
+  return typeof value === 'number' ? value : null;
 }
