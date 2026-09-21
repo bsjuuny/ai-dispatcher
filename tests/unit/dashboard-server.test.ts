@@ -47,7 +47,7 @@ describe('dashboard server', () => {
     const detail = await fetch(`${base}/api/tasks/${task.id}`);
     const body = await detail.json() as { originalRequest: unknown; requestPolicy: string };
     expect(body.originalRequest).toBeNull();
-    expect(body.requestPolicy).toContain('not persisted');
+    expect(body.requestPolicy).toContain('encrypted locally');
 
     const retried = await fetch(`${base}/api/tasks/${task.id}/retry`, {
       method: 'POST',
@@ -55,7 +55,7 @@ describe('dashboard server', () => {
       body: '{}',
     });
     expect(retried.status).toBe(200);
-    expect(await retried.json()).toMatchObject({ status: 'BLOCKED', errorCode: 'RESUME_CONTEXT_MISSING' });
+    expect(await retried.json()).toMatchObject({ status: 'FAILED', errorCode: 'GIT_REPO_MISSING' });
   });
 
   it('rejects an empty task request', async () => {
@@ -82,6 +82,24 @@ describe('dashboard server', () => {
       body: JSON.stringify({ task: 'Run attacker input' }),
     });
     expect(response.status).toBe(403);
+  });
+
+  it('saves validated settings through the loopback CSRF-protected API', async () => {
+    root = await mkdtemp(join(tmpdir(), 'ai-harness-dashboard-'));
+    dashboard = await startDashboard(root, 0);
+    const base = `http://127.0.0.1:${dashboard.port}`;
+    const page = await (await fetch(base)).text();
+    const csrf = csrfFrom(page);
+    const overview = await (await fetch(`${base}/api/overview`)).json() as { config: Record<string, unknown> };
+    const config = overview.config as { budget: { task: { max_retries: number } } } & Record<string, unknown>;
+    config.budget.task.max_retries = 1;
+    const response = await fetch(`${base}/api/settings`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-harness-csrf': csrf },
+      body: JSON.stringify(config),
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json() as { budget: { task: { max_retries: number } } }).budget.task.max_retries).toBe(1);
   });
 });
 

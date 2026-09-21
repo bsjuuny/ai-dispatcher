@@ -4,6 +4,10 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createHarnessContext } from './context.js';
 import { DASHBOARD_HTML } from './dashboard-page.js';
 import { GitHubManager } from './github-manager.js';
+import { HarnessGitManager, projectWorktreeRoot, type TaskWorktrees } from './git-manager.js';
+import { HarnessTaskLog } from './task-log.js';
+import type { HarnessTaskRecord } from './types.js';
+import { saveHarnessConfig } from './config.js';
 
 export interface DashboardHandle {
   port: number;
@@ -50,11 +54,19 @@ async function route(
   if (request.method === 'GET' && url.pathname === '/') return html(response, DASHBOARD_HTML.replace('__HARNESS_CSRF_TOKEN__', csrfToken));
   if (request.method === 'GET' && url.pathname === '/api/overview') return json(response, 200, overview(ctx));
   if (request.method === 'GET' && url.pathname === '/api/events') return stream(ctx, request, response);
+  if (request.method === 'POST' && url.pathname === '/api/settings') {
+    if (!validMutation(request, csrfToken)) return json(response, 403, { error: 'invalid dashboard mutation request' });
+    const body = await readJson(request);
+    if (body['jev'] && typeof body['jev'] === 'object') delete (body['jev'] as Record<string, unknown>)['configured'];
+    const config = saveHarnessConfig(ctx.projectRoot, body);
+    Object.assign(ctx.config, config);
+    return json(response, 200, redactConfig(config));
+  }
   if (request.method === 'POST' && url.pathname === '/api/tasks') {
     if (!validMutation(request, csrfToken)) return json(response, 403, { error: 'invalid dashboard mutation request' });
     const body = await readJson(request);
     if (typeof body['task'] !== 'string' || !body['task'].trim()) return json(response, 400, { error: 'task is required' });
-    const task = ctx.tasks.create(body['task'], ctx.projectRoot);
+    const task = ctx.workflow.create(body['task']);
     const execution = ctx.workflow.execute(task.id, body['task']).catch(() => undefined).finally(() => inFlight.delete(execution));
     inFlight.add(execution);
     return json(response, 202, task);
@@ -62,10 +74,22 @@ async function route(
   const taskMatch = url.pathname.match(/^\/api\/tasks\/(TASK-[A-Za-z0-9-]+)$/);
   if (request.method === 'GET' && taskMatch) {
     const task = ctx.tasks.get(taskMatch[1]!);
+    const integration = integrationMetadata(task.metadata);
+    let diff: string | null = null;
+    if (integration) {
+      try {
+        diff = await new HarnessGitManager(
+          ctx.projectRoot,
+          projectWorktreeRoot(ctx.projectRoot, ctx.config.git.worktree_directory),
+        ).diff(integration);
+      } catch {
+        diff = null;
+      }
+    }
     return json(response, 200, {
-      task,
+      task: taskView(task),
       originalRequest: null,
-      requestPolicy: 'Raw requests are not persisted by default; only hash and length are stored.',
+      requestPolicy: 'Raw requests are encrypted locally for resume and are not returned by the dashboard API.',
       usage: ctx.telemetry.summary(task.id),
       route: task.metadata['route'],
       dag: task.metadata['dag'] ?? null,
@@ -73,6 +97,11 @@ async function route(
       review: task.metadata['review'] ?? null,
       finalGate: task.metadata['finalGate'] ?? null,
       pullRequest: task.metadata['pullRequest'] ?? null,
+      ci: task.metadata['ci'] ?? null,
+      worktrees: task.metadata['worktrees'] ?? [],
+      changedFiles: task.metadata['changedFiles'] ?? [],
+      diff,
+      logs: readTaskLogs(ctx.projectRoot, task.id),
     });
   }
   const retryMatch = url.pathname.match(/^\/api\/tasks\/(TASK-[A-Za-z0-9-]+)\/retry$/);
@@ -105,12 +134,59 @@ function overview(ctx: HarnessContext) {
   const usage = tasks.map((task) => ctx.telemetry.summary(task.id));
   const active = ctx.telemetry.active();
   const activeNames = new Set(active.map((call) => call.agent));
+  const lastStatuses = new Map(ctx.telemetry.latestStatuses().map((call) => [call.agent, call.status]));
   return {
     overview: { ...counts, activeAgents: active.length },
-    tasks,
-    agents: ['claude-architect', 'claude-reviewer', 'claude-specialist', 'codex-1', 'codex-2', 'codex-3'].map((name) => ({ name, status: activeNames.has(name) ? 'working' : 'idle' })),
+    tasks: tasks.map(taskView),
+    agents: ['claude-architect', 'claude-reviewer', 'claude-specialist', 'codex-1', 'codex-2', 'codex-3'].map((name) => ({
+      name,
+      status: activeNames.has(name) ? 'working' : dashboardAgentStatus(lastStatuses.get(name)),
+    })),
     usage,
+    usageTotals: usageWindows(ctx, tasks),
     config: redactConfig(ctx.config),
+  };
+}
+
+function dashboardAgentStatus(status: 'success' | 'failed' | 'blocked' | 'timeout' | undefined): 'idle' | 'done' | 'failed' | 'blocked' {
+  if (status === 'success') return 'done';
+  if (status === 'blocked') return 'blocked';
+  if (status === 'failed' || status === 'timeout') return 'failed';
+  return 'idle';
+}
+
+const PHASE_PROGRESS: Record<string, number> = {
+  CREATED: 0, ROUTING: 5, PLANNING: 15, DAG_CREATED: 20, CODEX_IMPLEMENT: 45,
+  INTEGRATION: 60, QUALITY_CHECK: 75, CLAUDE_REVIEW: 85, JEV_FINAL_GATE: 90,
+  COMMIT: 92, PUSH: 94, PR_CREATE: 96, CI_WAIT: 98, WAITING_HUMAN: 99,
+  DONE: 100, FAILED: 100, ABORTED: 100,
+};
+
+function taskView(task: HarnessTaskRecord) {
+  return {
+    ...task,
+    progress: taskProgress(task),
+    elapsedMs: Math.max(0, Date.now() - Date.parse(task.createdAt)),
+    agentCount: Array.isArray(task.metadata['dag']) ? task.metadata['dag'].length : 0,
+  };
+}
+
+function taskProgress(task: HarnessTaskRecord): number {
+  if (task.status === 'COMPLETED') return 100;
+  const phase = task.phase === 'FAILED' || task.phase === 'ABORTED' ? task.lastSafePhase : task.phase;
+  if (phase === 'CODEX_IMPLEMENT' && Array.isArray(task.metadata['dag']) && task.metadata['dag'].length > 0) {
+    const done = task.metadata['dag'].filter((entry) => entry && typeof entry === 'object' && ['SUCCESS', 'FAILED', 'SKIPPED'].includes(String((entry as Record<string, unknown>)['state']))).length;
+    return Math.min(59, 20 + Math.floor(39 * done / task.metadata['dag'].length));
+  }
+  return PHASE_PROGRESS[phase] ?? 0;
+}
+
+function usageWindows(ctx: HarnessContext, tasks: HarnessTaskRecord[]) {
+  const now = Date.now();
+  return {
+    today: ctx.telemetry.totalsSince(new Date(now - 24 * 60 * 60_000)),
+    week: ctx.telemetry.totalsSince(new Date(now - 7 * 24 * 60 * 60_000)),
+    retryOverhead: tasks.reduce((sum, task) => sum + task.retry + Number(task.metadata['subtaskRetryCount'] ?? 0), 0),
   };
 }
 
@@ -179,4 +255,23 @@ function deliveryMetadata(metadata: Record<string, unknown>): { branch: string; 
     revision: value['revision'],
     baseBranch: typeof value['baseBranch'] === 'string' ? value['baseBranch'] : undefined,
   };
+}
+
+function integrationMetadata(metadata: Record<string, unknown>): TaskWorktrees | undefined {
+  const integration = metadata['integration'];
+  if (!integration || typeof integration !== 'object') return undefined;
+  const value = integration as Record<string, unknown>;
+  if (
+    typeof value['taskId'] !== 'string' || typeof value['integrationBranch'] !== 'string' ||
+    typeof value['integrationPath'] !== 'string' || typeof value['baseRef'] !== 'string'
+  ) return undefined;
+  return value as unknown as TaskWorktrees;
+}
+
+function readTaskLogs(projectRoot: string, taskId: string): string {
+  try {
+    return new HarnessTaskLog(projectRoot).read(taskId);
+  } catch {
+    return '';
+  }
 }

@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { HarnessGitManager } from '../../src/harness/git-manager.js';
+import { HarnessGitManager, projectWorktreeRoot } from '../../src/harness/git-manager.js';
 import type { ProcessExecutor } from '../../src/harness/herdr-adapter.js';
 
 interface Fixture {
@@ -36,6 +36,59 @@ function fixture(): Fixture {
 }
 
 describe('HarnessGitManager', () => {
+  it('refuses to start from a dirty user working tree', async () => {
+    const test = fixture();
+    writeFileSync(join(test.repo, 'app.txt'), 'user edit\n');
+    await expect(new HarnessGitManager(test.repo, test.worktrees).createTaskWorktree('TASK-099', 'master'))
+      .rejects.toMatchObject({ code: 'DIRTY_WORKING_TREE' });
+  });
+
+  it('namespaces the default worktree base per project', () => {
+    expect(projectWorktreeRoot('C:/repo-a', '../worktrees')).not.toBe(projectWorktreeRoot('C:/repo-b', '../worktrees'));
+  });
+
+  it('reuses a registered task and subtask worktree after restart', async () => {
+    const test = fixture();
+    const first = new HarnessGitManager(test.repo, test.worktrees);
+    const task = await first.createTaskWorktree('TASK-009', 'master');
+    const subtask = await first.createSubtaskWorktree(task, 'T1');
+    const restarted = new HarnessGitManager(test.repo, test.worktrees);
+    await expect(restarted.createTaskWorktree('TASK-009', 'master')).resolves.toEqual(task);
+    await expect(restarted.createSubtaskWorktree(task, 'T1')).resolves.toEqual(subtask);
+  });
+
+  it('blocks test deletion, skip injection, and files outside declared DAG ownership', async () => {
+    const test = fixture();
+    writeFileSync(join(test.repo, 'app.test.ts'), 'test("works", () => {})\n');
+    git(test.repo, ['add', 'app.test.ts']);
+    git(test.repo, ['commit', '-m', 'add test']);
+    const manager = new HarnessGitManager(test.repo, test.worktrees);
+    const task = await manager.createTaskWorktree('TASK-010', 'master');
+    const deleted = await manager.createSubtaskWorktree(task, 'DELETE');
+    rmSync(join(deleted.path, 'app.test.ts'));
+    await expect(manager.commitSubtask(deleted, 'bad')).rejects.toMatchObject({ code: 'SAFETY_POLICY_VIOLATION' });
+
+    const skipped = await manager.createSubtaskWorktree(task, 'SKIP');
+    writeFileSync(join(skipped.path, 'app.test.ts'), 'test.skip("works", () => {})\n');
+    await expect(manager.commitSubtask(skipped, 'bad')).rejects.toMatchObject({ code: 'SAFETY_POLICY_VIOLATION' });
+
+    const unrelated = await manager.createSubtaskWorktree(task, 'SCOPE');
+    writeFileSync(join(unrelated.path, 'other.txt'), 'unexpected\n');
+    await expect(manager.commitSubtask(unrelated, 'bad', ['app.txt'])).rejects.toMatchObject({ code: 'SAFETY_POLICY_VIOLATION' });
+  });
+
+  it('rechecks remediation changes in the integration worktree before final commit', async () => {
+    const test = fixture();
+    writeFileSync(join(test.repo, 'app.test.ts'), 'test("works", () => {})\n');
+    git(test.repo, ['add', 'app.test.ts']);
+    git(test.repo, ['commit', '-m', 'add test']);
+    const manager = new HarnessGitManager(test.repo, test.worktrees);
+    const task = await manager.createTaskWorktree('TASK-011', 'master');
+    writeFileSync(join(task.integrationPath, 'app.test.ts'), 'test.skip("works", () => {})\n');
+    await expect(manager.assertSafeIntegrationChanges(task)).rejects.toMatchObject({ code: 'SAFETY_POLICY_VIOLATION' });
+  });
+
+
   it('creates isolated integration/subtask branches and merges a committed subtask', async () => {
     const test = fixture();
     const manager = new HarnessGitManager(test.repo, test.worktrees);

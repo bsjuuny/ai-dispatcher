@@ -113,6 +113,10 @@ export class GitHubManager {
     }
     const outcome = await this.command('gh', ['pr', 'merge', branch, '--merge', '--match-head-commit', expectedRevision], 60_000);
     if (outcome.exitCode !== 0) throw error('CI_CHECK_FAILED', outcome.stderr || outcome.stdout, false);
+    const merged = await this.pullRequest(branch);
+    if (merged.state !== 'MERGED' || merged.headRefOid !== expectedRevision || merged.headRefName !== branch) {
+      throw error('CI_CHECK_FAILED', 'GitHub did not confirm the reviewed pull request revision as merged.', true);
+    }
   }
 
   static permitsAutoMerge(changedFiles: string[], protectedGlobs: string[]): boolean {

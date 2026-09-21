@@ -116,4 +116,9 @@ describe('HerdrAdapter', () => {
       retryable: true,
     });
   });
+
+  it('treats an explicit agent-not-found response as a resumable miss', async () => {
+    const execute = vi.fn<ProcessExecutor>().mockResolvedValue(outcome('', { exitCode: 1, stderr: 'agent_not_found' }));
+    await expect(adapter(execute).findAgent('C:/repo', 'codex-1')).resolves.toBeUndefined();
+  });
 });

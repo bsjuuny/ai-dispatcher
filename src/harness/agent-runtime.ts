@@ -26,6 +26,13 @@ export class HerdrAgentRuntime implements AgentRuntime {
   constructor(private readonly herdr: HerdrAdapter) {}
 
   async run(request: HarnessAgentRequest): Promise<HarnessAgentResult> {
+    const existing = await this.herdr.findAgent(request.workingDirectory, request.name);
+    if (existing) {
+      const settled = existing.state === 'working'
+        ? await this.herdr.wait(request.workingDirectory, request.name, request.timeoutMs)
+        : existing;
+      return this.promptSettled(request, settled, existing.paneId ?? 'restored');
+    }
     const workspace = await this.herdr.createWorkspace(request.workingDirectory, request.name);
     await this.herdr.startAgent(request.workingDirectory, {
       name: request.name,
@@ -34,6 +41,21 @@ export class HerdrAgentRuntime implements AgentRuntime {
       timeoutMs: request.timeoutMs,
       nativeArgs: request.nativeArgs,
     });
+    return this.promptSettled(request, undefined, workspace.rootPaneId, workspace.workspaceId);
+  }
+
+  private async promptSettled(
+    request: HarnessAgentRequest,
+    existing: Awaited<ReturnType<HerdrAdapter['getAgent']>> | undefined,
+    paneId: string,
+    workspaceId = paneId.includes(':p') ? paneId.split(':p', 1)[0]! : 'restored',
+  ): Promise<HarnessAgentResult> {
+    if (existing?.state === 'blocked') {
+      throw new DispatcherError({ code: 'AGENT_BLOCKED', message: `${request.name} requires user action.`, retryable: false });
+    }
+    if (existing && !['idle', 'done'].includes(existing.state)) {
+      throw new DispatcherError({ code: 'AGENT_FAILED', message: `${request.name} cannot be resumed from ${existing.state}.`, retryable: true });
+    }
     const settled = await this.herdr.prompt(
       request.workingDirectory,
       request.name,
@@ -66,8 +88,8 @@ export class HerdrAgentRuntime implements AgentRuntime {
       name: request.name,
       state: settled.state,
       output,
-      workspaceId: workspace.workspaceId,
-      paneId: workspace.rootPaneId,
+      workspaceId,
+      paneId,
     };
   }
 }

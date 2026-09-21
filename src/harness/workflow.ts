@@ -10,7 +10,8 @@ import type { GitHubManager } from './github-manager.js';
 import { InstrumentedAgentRuntime } from './instrumented-runtime.js';
 import type { JevFinalGate } from './final-gate.js';
 import type { JevRouter, JevRouteDecision } from './jev-router.js';
-import type { ArchitectPlan } from './plan.js';
+import { parseArchitectPlan, type ArchitectPlan } from './plan.js';
+import type { DagTaskSnapshot } from './dag-scheduler.js';
 import type { DeterministicQualityGate, QualityGateResult } from './quality-gate.js';
 import { ClaudeReviewerService, type ClaudeReview } from './review-service.js';
 import { ClaudeSpecialistService } from './specialist-service.js';
@@ -18,6 +19,8 @@ import type { HarnessTaskManager } from './task-manager.js';
 import type { TelemetryManager } from './telemetry.js';
 import type { HarnessTaskRecord } from './types.js';
 import type { HarnessTaskLog } from './task-log.js';
+import type { ResumeEnvelopeStore } from './resume-envelope.js';
+import type { WorkflowLeaseManager } from './workflow-lease.js';
 
 export interface HarnessWorkflowDependencies {
   projectRoot: string;
@@ -32,13 +35,20 @@ export interface HarnessWorkflowDependencies {
   git: HarnessGitManager;
   githubFactory: (integrationPath: string) => GitHubManager;
   log: HarnessTaskLog;
+  resumeEnvelopes: ResumeEnvelopeStore;
+  workflowLeases: WorkflowLeaseManager;
 }
 
 export class HarnessWorkflow {
   constructor(private readonly deps: HarnessWorkflowDependencies) {}
 
-  async start(requirement: string): Promise<HarnessTaskRecord> {
+  create(requirement: string): HarnessTaskRecord {
     const task = this.deps.tasks.create(requirement, this.deps.projectRoot);
+    return this.deps.tasks.recordMetadata(task.id, { resumeEnvelope: this.deps.resumeEnvelopes.seal(requirement.trim()) });
+  }
+
+  async start(requirement: string): Promise<HarnessTaskRecord> {
+    const task = this.create(requirement);
     return this.execute(task.id, requirement);
   }
 
@@ -47,11 +57,25 @@ export class HarnessWorkflow {
     if (task.status === 'COMPLETED' || task.status === 'ABORTED' || task.phase === 'WAITING_HUMAN') return task;
     const delivery = parseDelivery(task.metadata);
     if (!delivery) {
-      this.deps.log.append(taskId, 'resume.blocked', { errorCode: 'RESUME_CONTEXT_MISSING', phase: task.phase });
-      return this.deps.tasks.block(taskId, 'RESUME_CONTEXT_MISSING');
+      const envelope = task.metadata['resumeEnvelope'];
+      if (typeof envelope !== 'string') {
+        this.deps.log.append(taskId, 'resume.blocked', { errorCode: 'RESUME_CONTEXT_MISSING', phase: task.phase });
+        return this.deps.tasks.block(taskId, 'RESUME_CONTEXT_MISSING');
+      }
+      try {
+        return await this.execute(taskId, this.deps.resumeEnvelopes.open(envelope), true);
+      } catch (cause) {
+        if (isDispatcherError(cause) && cause.code === 'RESUME_CONTEXT_MISSING') {
+          this.deps.log.append(taskId, 'resume.blocked', { errorCode: cause.code, phase: task.phase });
+          return this.deps.tasks.block(taskId, cause.code);
+        }
+        throw cause;
+      }
     }
-    const github = this.deps.githubFactory(delivery.integrationPath);
+    const lease = this.deps.workflowLeases.acquire(taskId);
     try {
+      const github = this.deps.githubFactory(delivery.integrationPath);
+      try {
       if (delivery.state === 'COMMITTED') {
         await github.pushIntegration(taskId);
         delivery.state = 'PUSHED';
@@ -76,12 +100,15 @@ export class HarnessWorkflow {
       }
       this.deps.tasks.enterPhase(taskId, 'CI_WAIT', { status: 'WAITING' });
       return await this.waitForCi(taskId, delivery.branch, github, true);
-    } catch (cause) {
-      if (isDispatcherError(cause) && cause.code === 'CI_CHECK_PENDING') {
-        this.deps.log.append(taskId, 'resume.ci-pending');
-        return this.deps.tasks.wait(taskId, cause.code);
+      } catch (cause) {
+        if (isDispatcherError(cause) && cause.code === 'CI_CHECK_PENDING') {
+          this.deps.log.append(taskId, 'resume.ci-pending');
+          return this.deps.tasks.wait(taskId, cause.code);
+        }
+        throw cause;
       }
-      throw cause;
+    } finally {
+      this.deps.workflowLeases.release(lease);
     }
   }
 
@@ -100,27 +127,41 @@ export class HarnessWorkflow {
     return this.resume(taskId);
   }
 
-  async execute(taskId: string, requirement: string): Promise<HarnessTaskRecord> {
+  async execute(taskId: string, requirement: string, resuming = false): Promise<HarnessTaskRecord> {
+    const lease = this.deps.workflowLeases.acquire(taskId);
+    try {
+      return await this.executeWithLease(taskId, requirement, resuming);
+    } finally {
+      this.deps.workflowLeases.release(lease);
+    }
+  }
+
+  private async executeWithLease(taskId: string, requirement: string, resuming: boolean): Promise<HarnessTaskRecord> {
     const { tasks, config, artifacts } = this.deps;
     const existing = tasks.get(taskId);
     const configuredDeadline = Date.parse(existing.createdAt) + minutes(config.budget.task.max_duration_minutes);
     const persistedDeadline = typeof existing.metadata['deadlineAt'] === 'string' ? Date.parse(existing.metadata['deadlineAt']) : Number.NaN;
     const deadlineMs = Number.isFinite(persistedDeadline) ? persistedDeadline : configuredDeadline;
     tasks.recordMetadata(taskId, { deadlineAt: new Date(deadlineMs).toISOString() });
-    const runtime = new InstrumentedAgentRuntime(taskId, this.deps.runtime, this.deps.telemetry, config.budget, this.deps.log, deadlineMs);
+    const runtime = new InstrumentedAgentRuntime(taskId, this.deps.runtime, this.deps.telemetry, config.budget, this.deps.log, deadlineMs, this.deps.projectRoot);
     this.deps.log.append(taskId, 'workflow.started');
     try {
-      tasks.enterPhase(taskId, 'ROUTING');
-      const route = await this.route(taskId, requirement);
-      tasks.recordRoute(taskId, route as unknown as Record<string, unknown> & { complexity: string });
-      artifacts.writeJson(taskId, 'route', route);
-      this.deps.log.append(taskId, 'routing.completed', { complexity: route.complexity, risk: route.risk, source: route.source });
+      let route = resuming ? parseRoute(existing.metadata) : undefined;
+      if (!route) {
+        tasks.enterPhase(taskId, 'ROUTING');
+        route = await this.route(taskId, requirement);
+        tasks.recordRoute(taskId, route as unknown as Record<string, unknown> & { complexity: string });
+        artifacts.writeJson(taskId, 'route', route);
+        this.deps.log.append(taskId, 'routing.completed', { complexity: route.complexity, risk: route.risk, source: route.source });
+      }
 
-      const taskWorktree = await this.deps.git.createTaskWorktree(taskId, config.git.base_branch);
+      const taskWorktree = (resuming ? parseIntegration(existing.metadata) : undefined)
+        ?? await this.deps.git.createTaskWorktree(taskId, config.git.base_branch);
       tasks.recordMetadata(taskId, { integration: taskWorktree });
 
+      let plan = resuming ? resumePlan(existing.metadata, requirement, route) : undefined;
       let specialistContext: string[] = [];
-      if (route.needSpecialist) {
+      if (!plan && route.needSpecialist) {
         const specialist = await new ClaudeSpecialistService(runtime).analyze({
           requirement,
           domain: route.risk,
@@ -132,25 +173,32 @@ export class HarnessWorkflow {
         artifacts.writeJson(taskId, 'specialist', { state: specialist.state, output: scrubSecrets(specialist.output).slice(0, 12_000) });
       }
 
-      tasks.enterPhase(taskId, 'PLANNING');
-      const plan = route.needArchitect
-        ? await new ArchitectService(runtime).plan({
-            requirement,
-            workingDirectory: taskWorktree.integrationPath,
-            timeoutMs: minutes(config.timeouts.claude_minutes),
-            repositoryContext: specialistContext,
-          })
-        : singleTaskPlan(requirement, route.risk);
+      if (!plan) {
+        tasks.enterPhase(taskId, 'PLANNING');
+        plan = route.needArchitect
+          ? await new ArchitectService(runtime).plan({
+              requirement,
+              workingDirectory: taskWorktree.integrationPath,
+              timeoutMs: minutes(config.timeouts.claude_minutes),
+              repositoryContext: specialistContext,
+            })
+          : singleTaskPlan(requirement, route.risk);
+      }
       const persistedPlan = persistentPlan(plan, route.needArchitect);
+      const completedTaskIds = resuming ? completedDagTaskIds(existing.metadata) : [];
       artifacts.writeJson(taskId, 'plan', persistedPlan);
       tasks.enterPhase(taskId, 'DAG_CREATED');
       artifacts.writeJson(taskId, 'dag', persistedPlan.tasks);
-      tasks.recordMetadata(taskId, { dag: persistedPlan.tasks });
+      tasks.recordMetadata(taskId, {
+        dag: completedTaskIds.length > 0 ? existing.metadata['dag'] : persistedPlan.tasks,
+        plan: persistedPlan,
+      });
 
-      const subtaskWorktrees = new Map<string, SubtaskWorktree>();
+      const subtaskWorktrees = new Map<string, SubtaskWorktree>(parseSubtaskWorktrees(existing.metadata).map((worktree) => [worktree.subtaskId, worktree]));
       tasks.enterPhase(taskId, 'CODEX_IMPLEMENT');
       const pool = await new CodexWorkerPool(runtime).execute({
         tasks: plan.tasks,
+        completedTaskIds,
         workerCount: route.codexWorkers,
         timeoutMs: minutes(config.timeouts.codex_minutes),
         resolveWorkingDirectory: async (dagTask) => {
@@ -159,13 +207,29 @@ export class HarnessWorkflow {
           tasks.recordMetadata(taskId, { worktrees: [...subtaskWorktrees.values()] });
           return worktree.path;
         },
-        onTaskSucceeded: async ({ task: dagTask }) => {
+        onTaskSucceeded: async ({ task: dagTask, workerName }) => {
           const worktree = subtaskWorktrees.get(dagTask.id);
           if (!worktree) throw new Error(`Missing worktree for ${dagTask.id}.`);
-          const quality = await this.deps.quality.run({ cwd: worktree.path, commands: config.quality, timeoutMs: this.remainingTimeout(taskId, minutes(config.timeouts.quality_minutes)) });
-          artifacts.writeJson(taskId, `quality-${dagTask.id}`, quality);
+          let quality = await this.runSubtaskQuality(taskId, dagTask.id, worktree.path, 0);
+          let subtaskRetry = 0;
+          while (!quality.passed && subtaskRetry < config.budget.task.max_retries) {
+            subtaskRetry += 1;
+            tasks.recordMetadata(taskId, { subtaskRetryCount: Number(tasks.get(taskId).metadata['subtaskRetryCount'] ?? 0) + 1 });
+            await runtime.run({
+              name: workerName,
+              kind: 'codex',
+              workingDirectory: worktree.path,
+              timeoutMs: minutes(config.timeouts.codex_minutes),
+              prompt: [
+                `Repair DAG task ${dagTask.id} in the same worktree.`,
+                'Do not delete, disable, skip, or weaken tests.',
+                `Deterministic quality failures: ${JSON.stringify(quality.stages.filter((stage) => stage.status === 'FAIL' || stage.status === 'TIMEOUT'))}`,
+              ].join('\n'),
+            });
+            quality = await this.runSubtaskQuality(taskId, dagTask.id, worktree.path, subtaskRetry);
+          }
           if (!quality.passed) throw new DispatcherError({ code: quality.errorCode ?? 'VALIDATION_FAILED', message: `Subtask ${dagTask.id} failed quality: ${quality.failedStages.join(', ') || quality.errorCode}.`, retryable: true, taskId });
-          await this.deps.git.commitSubtask(worktree, `feat(${taskId.toLowerCase()}): ${dagTask.title}`);
+          await this.deps.git.commitSubtask(worktree, `feat(${taskId.toLowerCase()}): ${dagTask.title}`, dagTask.files);
           const merged = await this.deps.git.mergeSubtask(taskWorktree, worktree);
           if (merged.status === 'CONFLICT') throw new DispatcherError({ code: 'GIT_COMMAND_FAILED', message: `Merge conflict for ${dagTask.id}; automatic conflict resolution was not attempted.`, retryable: false, taskId });
         },
@@ -180,6 +244,7 @@ export class HarnessWorkflow {
       if (outcome.decision !== 'PASS') return tasks.block(taskId, 'FINAL_GATE_STOP');
 
       tasks.enterPhase(taskId, 'COMMIT');
+      await this.deps.git.assertSafeIntegrationChanges(taskWorktree, plan.tasks.flatMap((task) => task.files));
       const github = this.deps.githubFactory(taskWorktree.integrationPath);
       const revision = await github.commitIntegration(taskId, titleFromRequirement(requirement));
       const delivery = {
@@ -255,7 +320,19 @@ export class HarnessWorkflow {
     tasks.recordMetadata(taskId, { review, changedFiles });
     tasks.enterPhase(taskId, 'JEV_FINAL_GATE');
     const current = tasks.get(taskId);
-    const gate = await this.deps.finalGate.decide({ quality, review, retry: current.retry, maxRetry: current.maxRetry });
+    const handle = this.deps.telemetry.start(taskId, 'jev-final-gate', 'jev');
+    let gate;
+    try {
+      gate = await this.deps.finalGate.decide({ quality, review, retry: current.retry, maxRetry: current.maxRetry });
+      this.deps.telemetry.finish(handle, {
+        status: 'success',
+        source: gate.source === 'jev' ? 'ACTUAL' : 'UNAVAILABLE',
+        billingMode: gate.source === 'jev' ? 'API' : 'UNKNOWN',
+      });
+    } catch (cause) {
+      this.deps.telemetry.finish(handle, { status: 'failed', source: 'UNAVAILABLE', billingMode: 'UNKNOWN' });
+      throw cause;
+    }
     artifacts.writeJson(taskId, 'final-gate', gate);
     tasks.recordMetadata(taskId, { finalGate: gate });
     return { decision: gate.decision, quality, review };
@@ -332,6 +409,17 @@ export class HarnessWorkflow {
     return this.deps.tasks.enterPhase(taskId, 'WAITING_HUMAN', { status: 'WAITING' });
   }
 
+  private async runSubtaskQuality(taskId: string, subtaskId: string, cwd: string, attempt: number): Promise<QualityGateResult> {
+    const quality = await this.deps.quality.run({
+      cwd,
+      commands: this.deps.config.quality,
+      timeoutMs: this.remainingTimeout(taskId, minutes(this.deps.config.timeouts.quality_minutes)),
+    });
+    const suffix = attempt === 0 ? '' : `-retry-${attempt}`;
+    this.deps.artifacts.writeJson(taskId, `quality-${subtaskId}${suffix}`, quality);
+    return quality;
+  }
+
   private remainingTimeout(taskId: string, requestedMs: number): number {
     const task = this.deps.tasks.get(taskId);
     const deadlineAt = typeof task.metadata['deadlineAt'] === 'string' ? Date.parse(task.metadata['deadlineAt']) : Number.NaN;
@@ -405,4 +493,61 @@ function parseDelivery(metadata: Record<string, unknown>): {
     baseBranch: delivery['baseBranch'],
     state: delivery['state'] as 'COMMITTED' | 'PUSHED' | 'PR_CREATED',
   };
+}
+
+function parseRoute(metadata: Record<string, unknown>): JevRouteDecision | undefined {
+  const value = metadata['route'];
+  if (!value || typeof value !== 'object') return undefined;
+  const route = value as Record<string, unknown>;
+  if (
+    !['trivial', 'normal', 'complex', 'high', 'critical'].includes(String(route['complexity'])) ||
+    !['low', 'medium', 'high', 'critical'].includes(String(route['risk'])) ||
+    !['jev', 'deterministic-fallback'].includes(String(route['source'])) ||
+    typeof route['needArchitect'] !== 'boolean' || typeof route['needReviewer'] !== 'boolean' ||
+    typeof route['needSpecialist'] !== 'boolean' || typeof route['parallel'] !== 'boolean' ||
+    typeof route['codexWorkers'] !== 'number'
+  ) return undefined;
+  return route as unknown as JevRouteDecision;
+}
+
+function parseIntegration(metadata: Record<string, unknown>): TaskWorktrees | undefined {
+  const value = metadata['integration'];
+  if (!value || typeof value !== 'object') return undefined;
+  const worktree = value as Record<string, unknown>;
+  if (
+    typeof worktree['taskId'] !== 'string' || typeof worktree['integrationBranch'] !== 'string' ||
+    typeof worktree['integrationPath'] !== 'string' || typeof worktree['baseRef'] !== 'string'
+  ) return undefined;
+  return worktree as unknown as TaskWorktrees;
+}
+
+function parseSubtaskWorktrees(metadata: Record<string, unknown>): SubtaskWorktree[] {
+  const value = metadata['worktrees'];
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is SubtaskWorktree => {
+    if (!entry || typeof entry !== 'object') return false;
+    const worktree = entry as Record<string, unknown>;
+    return typeof worktree['taskId'] === 'string' && typeof worktree['subtaskId'] === 'string' &&
+      typeof worktree['branch'] === 'string' && typeof worktree['path'] === 'string';
+  });
+}
+
+function resumePlan(metadata: Record<string, unknown>, requirement: string, route: JevRouteDecision): ArchitectPlan | undefined {
+  if (!route.needArchitect) return singleTaskPlan(requirement, route.risk);
+  const value = metadata['plan'];
+  if (!value || typeof value !== 'object') return undefined;
+  try {
+    return parseArchitectPlan(JSON.stringify(value));
+  } catch {
+    return undefined;
+  }
+}
+
+function completedDagTaskIds(metadata: Record<string, unknown>): string[] {
+  const value = metadata['dag'];
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const task = entry as Partial<DagTaskSnapshot>;
+    return task.state === 'SUCCESS' && typeof task.id === 'string' ? [task.id] : [];
+  });
 }

@@ -21,9 +21,14 @@ export interface DagTaskSnapshot extends DagTask {
 export class DagScheduler {
   private readonly tasks: Map<string, DagTaskSnapshot>;
 
-  constructor(tasks: DagTask[]) {
+  constructor(tasks: DagTask[], completedTaskIds: string[] = []) {
     validateDag(tasks);
     this.tasks = new Map(tasks.map((task) => [task.id, { ...task, dependencies: [...task.dependencies], files: [...task.files], state: 'PENDING' }]));
+    for (const taskId of completedTaskIds) {
+      const task = this.tasks.get(taskId);
+      if (!task) throw dagError(`Completed DAG task is unknown: ${taskId}.`);
+      task.state = 'SUCCESS';
+    }
     this.refresh();
   }
 

@@ -10,12 +10,14 @@ import { TelemetryManager } from './telemetry.js';
 import { HerdrAdapter } from './herdr-adapter.js';
 import { HerdrAgentRuntime } from './agent-runtime.js';
 import { ArtifactStore } from './artifact-store.js';
-import { HarnessGitManager } from './git-manager.js';
+import { HarnessGitManager, projectWorktreeRoot } from './git-manager.js';
 import { DeterministicQualityGate } from './quality-gate.js';
 import { JevFinalGate } from './final-gate.js';
 import { GitHubManager } from './github-manager.js';
 import { HarnessWorkflow } from './workflow.js';
 import { HarnessTaskLog } from './task-log.js';
+import { ResumeEnvelopeStore } from './resume-envelope.js';
+import { WorkflowLeaseManager } from './workflow-lease.js';
 
 export function createHarnessContext(projectRoot: string): {
   projectRoot: string;
@@ -54,9 +56,11 @@ export function createHarnessContext(projectRoot: string): {
     runtime: new HerdrAgentRuntime(herdr),
     quality: new DeterministicQualityGate(),
     artifacts: new ArtifactStore(root),
-    git: new HarnessGitManager(root, resolve(root, config.git.worktree_directory)),
+    git: new HarnessGitManager(root, projectWorktreeRoot(root, config.git.worktree_directory)),
     githubFactory: (integrationPath) => new GitHubManager(integrationPath),
     log: new HarnessTaskLog(root),
+    resumeEnvelopes: new ResumeEnvelopeStore(root),
+    workflowLeases: new WorkflowLeaseManager(root),
   });
   return { projectRoot: root, state, tasks, config, jev, telemetry, workflow };
 }

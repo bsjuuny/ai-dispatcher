@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { load as loadYaml } from 'js-yaml';
+import { dump as dumpYaml, load as loadYaml } from 'js-yaml';
 import { z } from 'zod';
 import { DispatcherError } from '../models/error.js';
 
@@ -76,6 +76,14 @@ const HarnessConfigSchema = z.object({
     quality_minutes: z.number().int().positive().default(15),
     ci_minutes: z.number().int().positive().default(30),
   }).default({ claude_minutes: 15, codex_minutes: 15, quality_minutes: 15, ci_minutes: 30 }),
+}).superRefine((config, context) => {
+  if (config.pull_request.auto_merge) {
+    context.addIssue({
+      code: 'custom',
+      path: ['pull_request', 'auto_merge'],
+      message: 'V4 requires an explicit human merge gate; auto_merge must remain false.',
+    });
+  }
 });
 
 export type HarnessConfig = z.infer<typeof HarnessConfigSchema>;
@@ -97,4 +105,13 @@ export function loadHarnessConfig(root: string): HarnessConfig {
       retryable: false,
     });
   }
+}
+
+export function saveHarnessConfig(root: string, raw: unknown): HarnessConfig {
+  const config = parseHarnessConfig(raw);
+  const path = join(root, 'harness.config.yaml');
+  const temporary = `${path}.tmp-${process.pid}`;
+  writeFileSync(temporary, dumpYaml(config, { noRefs: true, lineWidth: 120 }), { encoding: 'utf8', mode: 0o600 });
+  renameSync(temporary, path);
+  return config;
 }

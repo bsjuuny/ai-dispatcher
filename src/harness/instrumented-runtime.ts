@@ -1,4 +1,5 @@
 import { DispatcherError, isDispatcherError } from '../models/error.js';
+import { createHash } from 'node:crypto';
 import type { AgentRuntime, HarnessAgentRequest, HarnessAgentResult } from './agent-runtime.js';
 import type { HarnessConfig } from './config.js';
 import type { TelemetryManager } from './telemetry.js';
@@ -12,6 +13,7 @@ export class InstrumentedAgentRuntime implements AgentRuntime {
     private readonly budget: HarnessConfig['budget'],
     private readonly log?: HarnessTaskLog,
     private readonly deadlineMs?: number,
+    private readonly projectRoot = '',
   ) {}
 
   async run(request: HarnessAgentRequest): Promise<HarnessAgentResult> {
@@ -22,14 +24,18 @@ export class InstrumentedAgentRuntime implements AgentRuntime {
     }
     const handle = this.telemetry.startWithBudget(this.taskId, request.name, provider, this.budget);
     try {
-      const result = await this.inner.run({ ...request, timeoutMs: Math.min(request.timeoutMs, remainingMs) });
+      const result = await this.inner.run({
+        ...request,
+        name: runtimeAgentName(this.projectRoot, this.taskId, request.name),
+        timeoutMs: Math.min(request.timeoutMs, remainingMs),
+      });
       this.telemetry.finish(handle, {
         status: result.state === 'blocked' ? 'blocked' : result.state === 'failed' ? 'failed' : 'success',
         source: 'UNAVAILABLE',
         billingMode: 'UNKNOWN',
       });
       this.log?.appendAgent(this.taskId, request.name, { status: result.state, provider });
-      return result;
+      return { ...result, name: request.name };
     } catch (cause) {
       this.telemetry.finish(handle, {
         status: isDispatcherError(cause) && cause.code === 'AGENT_BLOCKED' ? 'blocked' : isDispatcherError(cause) && cause.code === 'HERDR_TIMEOUT' ? 'timeout' : 'failed',
@@ -40,4 +46,11 @@ export class InstrumentedAgentRuntime implements AgentRuntime {
       throw cause;
     }
   }
+}
+
+export function runtimeAgentName(projectRoot: string, taskId: string, logicalName: string): string {
+  const project = createHash('sha256').update(projectRoot.toLowerCase()).digest('hex').slice(0, 6);
+  const task = taskId.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+  const logical = logicalName.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+  return `h${project}-${task}-${logical}`.slice(0, 32).replace(/-+$/g, '');
 }

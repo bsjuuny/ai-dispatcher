@@ -147,6 +147,17 @@ export class HerdrAdapter {
     );
   }
 
+  async findAgent(cwd: string, target: string): Promise<HerdrAgentSnapshot | undefined> {
+    try {
+      return await this.getAgent(cwd, target);
+    } catch (cause) {
+      if (cause instanceof DispatcherError && cause.code === 'HERDR_COMMAND_FAILED' && /agent[_ -]?not[_ -]?found|unknown agent|not found/i.test(cause.message)) {
+        return undefined;
+      }
+      throw cause;
+    }
+  }
+
   async readAgent(cwd: string, target: string, lines = 120): Promise<string> {
     const response = await this.runJson<Record<string, unknown>>(
       ['agent', 'read', target, '--source', 'recent-unwrapped', '--lines', String(lines), '--format', 'text'],

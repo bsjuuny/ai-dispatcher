@@ -18,6 +18,10 @@ describe('HarnessConfig', () => {
     expect(() => parseHarnessConfig({ budget: { codex: { max_workers: 4 } } })).toThrow();
   });
 
+  it('rejects auto merge until the explicit human gate policy changes', () => {
+    expect(() => parseHarnessConfig({ pull_request: { auto_merge: true } })).toThrow(/human merge gate/);
+  });
+
   it('accepts string and argv-array quality commands', () => {
     const config = parseHarnessConfig({ quality: { lint: 'pnpm lint', test: ['pnpm', 'test'] } });
     expect(config.quality.lint).toBe('pnpm lint');

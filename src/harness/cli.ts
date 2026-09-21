@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { createHarnessContext } from './context.js';
 import { isDispatcherError } from '../models/error.js';
 import { startDashboard } from './dashboard-server.js';
-import { HarnessGitManager, type SubtaskWorktree, type TaskWorktrees } from './git-manager.js';
+import { HarnessGitManager, projectWorktreeRoot, type SubtaskWorktree, type TaskWorktrees } from './git-manager.js';
 import { HarnessTaskLog } from './task-log.js';
 import { runHarnessDoctor } from './doctor.js';
 
@@ -63,7 +63,7 @@ program
   .action(async (taskId: string, options) => {
     const ctx = createHarnessContext(resolve(options.project));
     const integration = integrationMetadata(ctx.tasks.get(taskId).metadata);
-    const manager = new HarnessGitManager(ctx.projectRoot, resolve(ctx.projectRoot, ctx.config.git.worktree_directory));
+    const manager = new HarnessGitManager(ctx.projectRoot, projectWorktreeRoot(ctx.projectRoot, ctx.config.git.worktree_directory));
     process.stdout.write(await manager.diff(integration));
   });
 
@@ -83,7 +83,7 @@ program
     const ctx = createHarnessContext(resolve(options.project));
     const task = ctx.tasks.get(taskId);
     const integration = integrationMetadata(task.metadata);
-    const manager = new HarnessGitManager(ctx.projectRoot, resolve(ctx.projectRoot, ctx.config.git.worktree_directory));
+    const manager = new HarnessGitManager(ctx.projectRoot, projectWorktreeRoot(ctx.projectRoot, ctx.config.git.worktree_directory));
     for (const worktree of subtaskMetadata(task.metadata).reverse()) await manager.removeWorktree(worktree.path);
     await manager.removeWorktree(integration.integrationPath);
     print(ctx.tasks.recordMetadata(taskId, { cleanedAt: new Date().toISOString() }), false);

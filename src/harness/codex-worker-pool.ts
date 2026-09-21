@@ -24,8 +24,9 @@ export class CodexWorkerPool {
     resolveWorkingDirectory: (task: DagTask) => string | Promise<string>;
     onTaskSucceeded?: (assignment: CodexWorkAssignment) => void | Promise<void>;
     onUpdate?: (tasks: DagTaskSnapshot[]) => void;
+    completedTaskIds?: string[];
   }): Promise<CodexWorkerPoolResult> {
-    const scheduler = new DagScheduler(input.tasks);
+    const scheduler = new DagScheduler(input.tasks, input.completedTaskIds);
     let maxParallelObserved = 0;
     let fatalError: unknown;
     while (!scheduler.isComplete()) {

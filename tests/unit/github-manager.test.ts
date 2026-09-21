@@ -49,10 +49,11 @@ describe('GitHubManager', () => {
     const execute = vi.fn()
       .mockResolvedValueOnce(ok(JSON.stringify([{ name: 'build', state: 'SUCCESS', bucket: 'pass' }])))
       .mockResolvedValueOnce(ok(JSON.stringify({ number: 7, url: 'https://github.test/pr/7', state: 'OPEN', headRefName: 'ai/TASK-001/integration', baseRefName: 'main', headRefOid: 'abc123' })))
-      .mockResolvedValueOnce(ok('merged'));
+      .mockResolvedValueOnce(ok('merged'))
+      .mockResolvedValueOnce(ok(JSON.stringify({ number: 7, url: 'https://github.test/pr/7', state: 'MERGED', headRefName: 'ai/TASK-001/integration', baseRefName: 'main', headRefOid: 'abc123' })));
     const manager = new GitHubManager('C:/repo', execute);
     await manager.mergeAfterHumanApproval('TASK-001', 'ai/TASK-001/integration', 'abc123', 'main');
-    expect(execute).toHaveBeenLastCalledWith(expect.objectContaining({ file: 'gh', args: ['pr', 'merge', 'ai/TASK-001/integration', '--merge', '--match-head-commit', 'abc123'] }));
+    expect(execute).toHaveBeenNthCalledWith(3, expect.objectContaining({ file: 'gh', args: ['pr', 'merge', 'ai/TASK-001/integration', '--merge', '--match-head-commit', 'abc123'] }));
     expect(GitHubManager.permitsAutoMerge(['src/a.ts'], ['auth/**'])).toBe(true);
     expect(GitHubManager.permitsAutoMerge(['auth/session.ts'], ['auth/**'])).toBe(false);
   });

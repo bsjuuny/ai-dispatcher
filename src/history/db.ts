@@ -113,6 +113,7 @@ const MIGRATIONS: string[] = [
     agent TEXT NOT NULL,
     provider TEXT NOT NULL,
     started_at TEXT NOT NULL,
+    lease_expires_at TEXT NOT NULL,
     FOREIGN KEY (task_id) REFERENCES harness_tasks (task_id)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_harness_agent_activity_task_id ON harness_agent_activity (task_id, started_at)`,
@@ -129,7 +130,15 @@ export function openDatabase(path: string): DatabaseSync {
   for (const migration of MIGRATIONS) {
     db.exec(migration);
   }
+  ensureColumn(db, 'harness_agent_activity', 'lease_expires_at', "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'");
   return db;
+}
+
+function ensureColumn(db: DatabaseSync, table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<Record<string, unknown>>;
+  if (!columns.some((entry) => entry['name'] === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
 }
 
 export function defaultHistoryDbPath(projectRoot: string): string {

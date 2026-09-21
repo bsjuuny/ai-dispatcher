@@ -29,11 +29,18 @@ export interface ActiveAgentCall {
   agent: string;
   provider: AgentProvider;
   startedAt: string;
+  leaseExpiresAt: string;
 }
 
 export interface AgentCallLimits {
   providerMax: number;
   agentMax?: number;
+}
+
+export interface AgentLastStatus {
+  agent: string;
+  status: AgentCallRecord['status'];
+  finishedAt: string;
 }
 
 export interface AgentUsageSummary {
@@ -49,12 +56,23 @@ export interface AgentUsageSummary {
   actualCost: number | null;
 }
 
+export interface AgentUsageWindow {
+  calls: number;
+  durationMs: number;
+  claudeCalls: number;
+  codexCalls: number;
+  jevCalls: number;
+  actualCost: number | null;
+}
+
 export interface HarnessTelemetryStore {
   recordAgentCall(record: AgentCallRecord): void;
   reserveAgentCall(call: ActiveAgentCall, limits: AgentCallLimits): boolean;
   completeAgentCall(record: AgentCallRecord): void;
-  getActiveAgentCalls(taskId?: string): ActiveAgentCall[];
+  getActiveAgentCalls(taskId?: string, now?: string): ActiveAgentCall[];
   getAgentUsageSummary(taskId: string): AgentUsageSummary;
+  getLatestAgentStatuses(): AgentLastStatus[];
+  getAgentUsageSince(since: string): AgentUsageWindow;
 }
 
 export class TelemetryManager {
@@ -64,7 +82,7 @@ export class TelemetryManager {
   ) {}
 
   start(taskId: string, agent: string, provider: AgentProvider): AgentCallHandle {
-    return this.reserve(taskId, agent, provider, { providerMax: Number.POSITIVE_INFINITY });
+    return this.reserve(taskId, agent, provider, { providerMax: Number.POSITIVE_INFINITY }, provider === 'jev' ? 10 : 65);
   }
 
   startWithBudget(
@@ -79,11 +97,11 @@ export class TelemetryManager {
         ? budget.claude.max_calls
         : Number.POSITIVE_INFINITY;
     const agentMax = agent === 'claude-specialist' ? budget.specialist.max_calls : undefined;
-    return this.reserve(taskId, agent, provider, { providerMax, agentMax });
+    return this.reserve(taskId, agent, provider, { providerMax, agentMax }, budget.task.max_duration_minutes + 5);
   }
 
   active(taskId?: string): ActiveAgentCall[] {
-    return this.store.getActiveAgentCalls(taskId);
+    return this.store.getActiveAgentCalls(taskId, this.now().toISOString());
   }
 
   private reserve(
@@ -91,9 +109,18 @@ export class TelemetryManager {
     agent: string,
     provider: AgentProvider,
     limits: AgentCallLimits,
+    leaseMinutes: number,
   ): AgentCallHandle {
     const started = this.now();
-    const handle = { callId: randomUUID(), taskId, agent, provider, startedAt: started.toISOString(), startedMs: started.getTime() };
+    const handle = {
+      callId: randomUUID(),
+      taskId,
+      agent,
+      provider,
+      startedAt: started.toISOString(),
+      leaseExpiresAt: new Date(started.getTime() + leaseMinutes * 60_000).toISOString(),
+      startedMs: started.getTime(),
+    };
     if (!this.store.reserveAgentCall(handle, limits)) {
       throw new DispatcherError({
         code: 'BUDGET_EXCEEDED',
@@ -126,6 +153,14 @@ export class TelemetryManager {
 
   summary(taskId: string): AgentUsageSummary {
     return this.store.getAgentUsageSummary(taskId);
+  }
+
+  latestStatuses(): AgentLastStatus[] {
+    return this.store.getLatestAgentStatuses();
+  }
+
+  totalsSince(since: Date): AgentUsageWindow {
+    return this.store.getAgentUsageSince(since.toISOString());
   }
 }
 

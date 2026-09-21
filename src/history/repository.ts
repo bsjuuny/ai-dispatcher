@@ -14,7 +14,7 @@ import type {
   HarnessTaskRecord,
   HarnessTaskStatus,
 } from '../harness/types.js';
-import type { ActiveAgentCall, AgentCallLimits, AgentCallRecord, AgentUsageSummary, HarnessTelemetryStore } from '../harness/telemetry.js';
+import type { ActiveAgentCall, AgentCallLimits, AgentCallRecord, AgentLastStatus, AgentUsageSummary, AgentUsageWindow, HarnessTelemetryStore } from '../harness/telemetry.js';
 
 /**
  * The only file with raw SQL in it - everything else gets typed functions. Doubles
@@ -248,6 +248,7 @@ export class HistoryRepository implements UsageStore, AuditSink, HarnessStateSto
     try {
       this.db.exec('BEGIN IMMEDIATE');
       inTransaction = true;
+      this.db.prepare('DELETE FROM harness_agent_activity WHERE lease_expires_at <= ?').run(call.startedAt);
       const counts = this.db.prepare(
         `SELECT
           (SELECT COUNT(*) FROM harness_agent_calls WHERE task_id = ? AND provider = ?) +
@@ -263,8 +264,8 @@ export class HistoryRepository implements UsageStore, AuditSink, HarnessStateSto
         return false;
       }
       this.db.prepare(
-        'INSERT INTO harness_agent_activity (call_id, task_id, agent, provider, started_at) VALUES (?, ?, ?, ?, ?)',
-      ).run(call.callId, call.taskId, call.agent, call.provider, call.startedAt);
+        'INSERT INTO harness_agent_activity (call_id, task_id, agent, provider, started_at, lease_expires_at) VALUES (?, ?, ?, ?, ?, ?)',
+      ).run(call.callId, call.taskId, call.agent, call.provider, call.startedAt, call.leaseExpiresAt);
       this.db.exec('COMMIT');
       inTransaction = false;
       return true;
@@ -289,7 +290,8 @@ export class HistoryRepository implements UsageStore, AuditSink, HarnessStateSto
     }
   }
 
-  getActiveAgentCalls(taskId?: string): ActiveAgentCall[] {
+  getActiveAgentCalls(taskId?: string, now = new Date().toISOString()): ActiveAgentCall[] {
+    this.db.prepare('DELETE FROM harness_agent_activity WHERE lease_expires_at <= ?').run(now);
     const rows = taskId
       ? this.db.prepare('SELECT * FROM harness_agent_activity WHERE task_id = ? ORDER BY started_at ASC').all(taskId)
       : this.db.prepare('SELECT * FROM harness_agent_activity ORDER BY started_at ASC').all();
@@ -299,7 +301,50 @@ export class HistoryRepository implements UsageStore, AuditSink, HarnessStateSto
       agent: row['agent'] as string,
       provider: row['provider'] as ActiveAgentCall['provider'],
       startedAt: row['started_at'] as string,
+      leaseExpiresAt: row['lease_expires_at'] as string,
     }));
+  }
+
+  getLatestAgentStatuses(): AgentLastStatus[] {
+    const rows = this.db.prepare(
+      `SELECT calls.agent, calls.status, calls.finished_at
+       FROM harness_agent_calls calls
+       INNER JOIN (
+         SELECT agent, MAX(finished_at) AS finished_at
+         FROM harness_agent_calls
+         GROUP BY agent
+       ) latest ON latest.agent = calls.agent AND latest.finished_at = calls.finished_at
+       ORDER BY calls.agent ASC`,
+    ).all() as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      agent: row['agent'] as string,
+      status: row['status'] as AgentLastStatus['status'],
+      finishedAt: row['finished_at'] as string,
+    }));
+  }
+
+  getAgentUsageSince(since: string): AgentUsageWindow {
+    const row = this.db.prepare(
+      `SELECT
+         COUNT(*) AS calls,
+         COALESCE(SUM(duration_ms), 0) AS duration_ms,
+         SUM(CASE WHEN provider = 'claude' THEN 1 ELSE 0 END) AS claude_calls,
+         SUM(CASE WHEN provider = 'codex' THEN 1 ELSE 0 END) AS codex_calls,
+         SUM(CASE WHEN provider = 'jev' THEN 1 ELSE 0 END) AS jev_calls,
+         COUNT(actual_cost) AS cost_count,
+         SUM(actual_cost) AS actual_cost
+       FROM harness_agent_calls
+       WHERE finished_at >= ?`,
+    ).get(since) as Record<string, unknown>;
+    const calls = Number(row['calls']);
+    return {
+      calls,
+      durationMs: Number(row['duration_ms']),
+      claudeCalls: Number(row['claude_calls']),
+      codexCalls: Number(row['codex_calls']),
+      jevCalls: Number(row['jev_calls']),
+      actualCost: calls > 0 && Number(row['cost_count']) === calls ? Number(row['actual_cost']) : null,
+    };
   }
 
   getAgentUsageSummary(taskId: string): AgentUsageSummary {

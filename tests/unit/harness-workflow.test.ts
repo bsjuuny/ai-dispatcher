@@ -17,6 +17,8 @@ import { HarnessTaskManager } from '../../src/harness/task-manager.js';
 import { TelemetryManager } from '../../src/harness/telemetry.js';
 import { HarnessWorkflow } from '../../src/harness/workflow.js';
 import { HarnessTaskLog } from '../../src/harness/task-log.js';
+import { ResumeEnvelopeStore } from '../../src/harness/resume-envelope.js';
+import { WorkflowLeaseManager } from '../../src/harness/workflow-lease.js';
 import { openDatabase } from '../../src/history/db.js';
 import { HistoryRepository } from '../../src/history/repository.js';
 import type { ProcessOutcome } from '../../src/process/process-runner.js';
@@ -29,7 +31,9 @@ afterEach(() => {
 
 class EditingRuntime implements AgentRuntime {
   async run(request: HarnessAgentRequest): Promise<HarnessAgentResult> {
-    if (request.kind === 'codex') writeFileSync(join(request.workingDirectory, 'feature.txt'), 'implemented\n');
+    if (request.kind === 'codex') {
+      writeFileSync(join(request.workingDirectory, 'feature.txt'), request.prompt.startsWith('Repair DAG task') ? 'implemented\n' : 'broken\n');
+    }
     return { name: request.name, state: 'done', output: 'ok', workspaceId: 'workspace', paneId: 'pane' };
   }
 }
@@ -40,6 +44,64 @@ const unavailableJev: JevDecisionClient = {
 };
 
 describe('HarnessWorkflow', () => {
+  it('resumes from persisted DAG success without repeating routing, architecture, or Codex work', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'harness-resume-'));
+    roots.push(root);
+    const repo = join(root, 'repo');
+    const worktrees = join(root, 'worktrees');
+    mkdirSync(repo);
+    mkdirSync(worktrees);
+    git(repo, ['init', '-b', 'master']);
+    git(repo, ['config', 'user.email', 'harness@example.invalid']);
+    git(repo, ['config', 'user.name', 'Harness Test']);
+    writeFileSync(join(repo, 'base.txt'), 'base\n');
+    git(repo, ['add', 'base.txt']);
+    git(repo, ['commit', '-m', 'initial']);
+    const config = parseHarnessConfig({
+      git: { base_branch: 'master', worktree_directory: worktrees },
+      pull_request: { auto_create: false, auto_merge: false },
+      quality: { test: [process.execPath, '-e', 'process.exit(0)'] },
+    });
+    const state = new HistoryRepository(openDatabase(':memory:'));
+    const tasks = new HarnessTaskManager(state, 2);
+    const telemetry = new TelemetryManager(state);
+    const gitManager = new HarnessGitManager(repo, worktrees);
+    const runtime = { run: vi.fn() } as unknown as AgentRuntime;
+    const workflow = new HarnessWorkflow({
+      projectRoot: repo,
+      config,
+      tasks,
+      telemetry,
+      jev: new JevRouter(unavailableJev, new BudgetManager(config.budget)),
+      finalGate: new JevFinalGate(unavailableJev),
+      runtime,
+      quality: new DeterministicQualityGate(),
+      artifacts: new ArtifactStore(repo),
+      git: gitManager,
+      githubFactory: (path) => new GitHubManager(path),
+      log: new HarnessTaskLog(repo),
+      resumeEnvelopes: new ResumeEnvelopeStore(repo),
+      workflowLeases: new WorkflowLeaseManager(repo),
+    });
+    const task = workflow.create('Resume important task');
+    const integration = await gitManager.createTaskWorktree(task.id, 'master');
+    const subtask = await gitManager.createSubtaskWorktree(integration, 'T1');
+    writeFileSync(join(subtask.path, 'feature.txt'), 'done\n');
+    await gitManager.commitSubtask(subtask, 'feat: completed before crash');
+    await gitManager.mergeSubtask(integration, subtask);
+    const route = { complexity: 'complex', risk: 'medium', source: 'deterministic-fallback', needArchitect: true, needReviewer: false, needSpecialist: false, codexWorkers: 1, parallel: false } as const;
+    const plan = { summary: 'Persisted plan', risks: [], testStrategy: [], tasks: [{ id: 'T1', title: 'Feature', description: 'Already completed', dependencies: [], worker: 'codex', files: ['feature.txt'], risk: 'medium' }] } as const;
+    tasks.recordRoute(task.id, route);
+    tasks.recordMetadata(task.id, { integration, worktrees: [subtask], plan, dag: [{ ...plan.tasks[0], state: 'SUCCESS', workerName: 'codex-1' }] });
+    tasks.fail(task.id, 'PROCESS_EXIT_ERROR');
+
+    const resumed = await workflow.resume(task.id);
+    expect(resumed).toMatchObject({ status: 'WAITING', phase: 'WAITING_HUMAN' });
+    expect(runtime.run).not.toHaveBeenCalled();
+    expect(telemetry.summary(task.id)).toMatchObject({ jevCalls: 1, codexCalls: 0, claudeCalls: 0 });
+    state.close();
+  });
+
   it('runs a trivial task through isolated implementation, quality, final gate, and commit', async () => {
     const root = mkdtempSync(join(tmpdir(), 'harness-workflow-'));
     roots.push(root);
@@ -57,7 +119,7 @@ describe('HarnessWorkflow', () => {
     const config = parseHarnessConfig({
       git: { base_branch: 'master', worktree_directory: worktrees },
       pull_request: { auto_create: false, auto_merge: false },
-      quality: { test: [process.execPath, '-e', 'process.exit(0)'] },
+      quality: { test: [process.execPath, '-e', "const fs=require('node:fs');process.exit(fs.readFileSync('feature.txt','utf8').includes('implemented')?0:1)"] },
     });
     const state = new HistoryRepository(openDatabase(':memory:'));
     const tasks = new HarnessTaskManager(state, config.budget.task.max_retries);
@@ -84,6 +146,8 @@ describe('HarnessWorkflow', () => {
       git: new HarnessGitManager(repo, worktrees),
       githubFactory: (path) => new GitHubManager(path, resumeChecks ? checkExecutor : undefined),
       log: new HarnessTaskLog(repo),
+      resumeEnvelopes: new ResumeEnvelopeStore(repo),
+      workflowLeases: new WorkflowLeaseManager(repo),
     });
 
     const result = await workflow.start('Fix typo');
@@ -93,8 +157,10 @@ describe('HarnessWorkflow', () => {
     expect(result.metadata['quality']).toMatchObject({ passed: true });
     expect(git(join(worktrees, result.id, 'integration'), ['branch', '--show-current'])).toBe(`ai/${result.id}/integration`);
     expect(git(join(worktrees, result.id, 'integration'), ['show', 'HEAD:feature.txt'])).toBe('implemented');
-    expect(telemetry.summary(result.id)).toMatchObject({ codexCalls: 1, jevCalls: 1 });
+    expect(result.metadata['subtaskRetryCount']).toBe(1);
+    expect(telemetry.summary(result.id)).toMatchObject({ codexCalls: 2, jevCalls: 2 });
     expect(readFileSync(join(repo, '.ai-harness', 'artifacts', result.id, 'plan.json'), 'utf8')).not.toContain('Fix typo');
+    expect(JSON.stringify(result.metadata)).not.toContain('Fix typo');
 
     resumeChecks = true;
     tasks.recordMetadata(result.id, {
