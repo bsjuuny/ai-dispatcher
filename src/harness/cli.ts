@@ -29,7 +29,7 @@ program
     print(ctx.tasks.list(), Boolean(options.json));
   });
 
-for (const command of ['status', 'resume', 'retry', 'abort', 'finish'] as const) {
+for (const command of ['status', 'retry', 'abort', 'finish'] as const) {
   program
     .command(`${command} <taskId>`)
     .option('--project <path>', 'Project root', '.')
@@ -39,9 +39,7 @@ for (const command of ['status', 'resume', 'retry', 'abort', 'finish'] as const)
       const task =
         command === 'status'
           ? ctx.tasks.get(taskId)
-          : command === 'resume'
-            ? ctx.tasks.resume(taskId)
-            : command === 'retry'
+          : command === 'retry'
               ? ctx.tasks.retry(taskId)
               : command === 'abort'
                 ? ctx.tasks.abort(taskId)
@@ -49,6 +47,15 @@ for (const command of ['status', 'resume', 'retry', 'abort', 'finish'] as const)
       print(task, Boolean(options.json));
     });
 }
+
+program
+  .command('resume <taskId>')
+  .option('--project <path>', 'Project root', '.')
+  .option('--json', 'Output JSON')
+  .action(async (taskId: string, options) => {
+    const ctx = createHarnessContext(resolve(options.project));
+    print(await ctx.workflow.resume(taskId), Boolean(options.json));
+  });
 
 program
   .command('diff <taskId>')

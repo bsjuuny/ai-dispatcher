@@ -41,6 +41,29 @@ export class HarnessWorkflow {
     return this.execute(task.id, requirement);
   }
 
+  async resume(taskId: string): Promise<HarnessTaskRecord> {
+    const task = this.deps.tasks.get(taskId);
+    if (task.status === 'COMPLETED' || task.status === 'ABORTED' || task.phase === 'WAITING_HUMAN') return task;
+    const delivery = parseDelivery(task.metadata);
+    if (!delivery) {
+      this.deps.log.append(taskId, 'resume.blocked', { errorCode: 'RESUME_CONTEXT_MISSING', phase: task.phase });
+      return this.deps.tasks.block(taskId, 'RESUME_CONTEXT_MISSING');
+    }
+    const github = this.deps.githubFactory(delivery.integrationPath);
+    this.deps.tasks.enterPhase(taskId, 'CI_WAIT', { status: 'WAITING' });
+    const checks = await github.requiredChecks(delivery.branch);
+    this.deps.artifacts.writeJson(taskId, 'ci', checks);
+    this.deps.tasks.recordMetadata(taskId, { ci: checks });
+    if (checks.some((check) => check.bucket === 'fail' || check.bucket === 'cancel')) {
+      return this.deps.tasks.fail(taskId, 'CI_CHECK_FAILED');
+    }
+    if (checks.some((check) => check.bucket !== 'pass' && check.bucket !== 'skipping')) {
+      return this.deps.tasks.get(taskId);
+    }
+    this.deps.log.append(taskId, 'resume.ci-complete', { checks: checks.length });
+    return this.deps.tasks.enterPhase(taskId, 'WAITING_HUMAN', { status: 'WAITING' });
+  }
+
   async execute(taskId: string, requirement: string): Promise<HarnessTaskRecord> {
     const { tasks, config, artifacts } = this.deps;
     const runtime = new InstrumentedAgentRuntime(taskId, this.deps.runtime, this.deps.telemetry, config.budget, this.deps.log);
@@ -287,4 +310,13 @@ function pullRequestBody(taskId: string, plan: ArchitectPlan, quality: QualityGa
     '', '## AI Agents', '- Claude Architect (when routed)', '- Claude Reviewer (when routed)', '- Codex Workers',
     '', '## Harness Task', taskId,
   ].join('\n');
+}
+
+function parseDelivery(metadata: Record<string, unknown>): { branch: string; integrationPath: string } | undefined {
+  const value = metadata['delivery'];
+  if (!value || typeof value !== 'object') return undefined;
+  const delivery = value as Record<string, unknown>;
+  return typeof delivery['branch'] === 'string' && typeof delivery['integrationPath'] === 'string'
+    ? { branch: delivery['branch'], integrationPath: delivery['integrationPath'] }
+    : undefined;
 }

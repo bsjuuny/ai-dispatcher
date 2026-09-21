@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentRuntime, HarnessAgentRequest, HarnessAgentResult } from '../../src/harness/agent-runtime.js';
 import { ArtifactStore } from '../../src/harness/artifact-store.js';
 import { BudgetManager } from '../../src/harness/budget-manager.js';
@@ -19,6 +19,7 @@ import { HarnessWorkflow } from '../../src/harness/workflow.js';
 import { HarnessTaskLog } from '../../src/harness/task-log.js';
 import { openDatabase } from '../../src/history/db.js';
 import { HistoryRepository } from '../../src/history/repository.js';
+import type { ProcessOutcome } from '../../src/process/process-runner.js';
 
 const roots: string[] = [];
 
@@ -62,6 +63,14 @@ describe('HarnessWorkflow', () => {
     const tasks = new HarnessTaskManager(state, config.budget.task.max_retries);
     const telemetry = new TelemetryManager(state);
     const router = new JevRouter(unavailableJev, new BudgetManager(config.budget));
+    let resumeChecks = false;
+    const checkExecutor = vi.fn().mockImplementation(async (): Promise<ProcessOutcome> => ({
+      exitCode: 0,
+      stdout: JSON.stringify([{ name: 'build', state: 'SUCCESS', bucket: 'pass' }]),
+      stderr: '',
+      timedOut: false,
+      durationMs: 1,
+    }));
     const workflow = new HarnessWorkflow({
       projectRoot: repo,
       config,
@@ -73,7 +82,7 @@ describe('HarnessWorkflow', () => {
       quality: new DeterministicQualityGate(),
       artifacts: new ArtifactStore(repo),
       git: new HarnessGitManager(repo, worktrees),
-      githubFactory: (path) => new GitHubManager(path),
+      githubFactory: (path) => new GitHubManager(path, resumeChecks ? checkExecutor : undefined),
       log: new HarnessTaskLog(repo),
     });
 
@@ -86,6 +95,14 @@ describe('HarnessWorkflow', () => {
     expect(git(join(worktrees, result.id, 'integration'), ['show', 'HEAD:feature.txt'])).toBe('implemented');
     expect(telemetry.summary(result.id)).toMatchObject({ codexCalls: 1, jevCalls: 1 });
     expect(readFileSync(join(repo, '.ai-harness', 'artifacts', result.id, 'plan.json'), 'utf8')).not.toContain('Fix typo');
+
+    resumeChecks = true;
+    tasks.recordMetadata(result.id, { delivery: { branch: `ai/${result.id}/integration`, integrationPath: join(worktrees, result.id, 'integration') } });
+    tasks.fail(result.id, 'CI_CHECK_PENDING');
+    const resumed = await workflow.resume(result.id);
+    expect(resumed.phase).toBe('WAITING_HUMAN');
+    expect(resumed.metadata['ci']).toEqual([{ name: 'build', state: 'SUCCESS', bucket: 'pass' }]);
+    expect(checkExecutor).toHaveBeenCalledOnce();
     state.close();
   });
 });

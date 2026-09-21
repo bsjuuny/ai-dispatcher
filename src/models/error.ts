@@ -70,7 +70,8 @@ export type DispatcherErrorCode =
   | 'PR_CREATION_FAILED'
   | 'CI_CHECK_FAILED'
   | 'CI_CHECK_PENDING'
-  | 'BUDGET_EXCEEDED';
+  | 'BUDGET_EXCEEDED'
+  | 'RESUME_CONTEXT_MISSING';
 
 export type ErrorSeverity = 'info' | 'warning' | 'error' | 'fatal';
 
