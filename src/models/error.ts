@@ -65,7 +65,11 @@ export type DispatcherErrorCode =
   | 'GIT_COMMAND_FAILED'
   | 'SAFETY_POLICY_VIOLATION'
   | 'QUALITY_COMMAND_INVALID'
-  | 'QUALITY_COMMAND_MISSING';
+  | 'QUALITY_COMMAND_MISSING'
+  | 'GITHUB_NOT_AUTHENTICATED'
+  | 'PR_CREATION_FAILED'
+  | 'CI_CHECK_FAILED'
+  | 'CI_CHECK_PENDING';
 
 export type ErrorSeverity = 'info' | 'warning' | 'error' | 'fatal';
 

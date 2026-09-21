@@ -58,7 +58,18 @@ const HarnessConfigSchema = z.object({
     security: CommandSchema.optional(),
   }).default({}),
   git: z.object({ base_branch: z.string().default('main'), worktree_directory: z.string().default('worktrees') }).default({ base_branch: 'main', worktree_directory: 'worktrees' }),
-  pull_request: z.object({ auto_create: z.boolean().default(true), auto_merge: z.boolean().default(false) }).default({ auto_create: true, auto_merge: false }),
+  pull_request: z.object({
+    auto_create: z.boolean().default(true),
+    auto_merge: z.boolean().default(false),
+    protected_paths: z.array(z.string().min(1)).default([
+      '.github/**', 'infra/**', 'terraform/**', 'database/migrations/**',
+      'security/**', 'auth/**', 'payment/**',
+    ]),
+  }).default({
+    auto_create: true,
+    auto_merge: false,
+    protected_paths: ['.github/**', 'infra/**', 'terraform/**', 'database/migrations/**', 'security/**', 'auth/**', 'payment/**'],
+  }),
   timeouts: z.object({
     claude_minutes: z.number().int().positive().default(15),
     codex_minutes: z.number().int().positive().default(15),

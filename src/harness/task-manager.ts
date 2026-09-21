@@ -126,6 +126,14 @@ export class HarnessTaskManager {
     });
   }
 
+  recordMetadata(taskId: string, metadata: Record<string, unknown>): HarnessTaskRecord {
+    const current = this.get(taskId);
+    return this.store.update(taskId, {
+      metadata: { ...current.metadata, ...metadata },
+      updatedAt: this.now().toISOString(),
+    });
+  }
+
   private invalidTransition(taskId: string, status: HarnessTaskStatus, phase: HarnessPhase): DispatcherError {
     return new DispatcherError({
       code: 'INVALID_STATE_TRANSITION',

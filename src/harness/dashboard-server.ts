@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { AddressInfo } from 'node:net';
 import { createHarnessContext } from './context.js';
 import { DASHBOARD_HTML } from './dashboard-page.js';
+import { GitHubManager } from './github-manager.js';
 
 export interface DashboardHandle {
   port: number;
@@ -69,6 +70,20 @@ async function route(ctx: HarnessContext, request: IncomingMessage, response: Se
   if (request.method === 'POST' && retryMatch) {
     return json(response, 200, ctx.tasks.retry(retryMatch[1]!));
   }
+  const ciMatch = url.pathname.match(/^\/api\/tasks\/(TASK-[A-Za-z0-9-]+)\/ci$/);
+  if (request.method === 'GET' && ciMatch) {
+    const task = ctx.tasks.get(ciMatch[1]!);
+    const delivery = deliveryMetadata(task.metadata);
+    const checks = await new GitHubManager(delivery.integrationPath).requiredChecks(delivery.branch);
+    return json(response, 200, { checks, readyToMerge: checks.every((check) => check.bucket === 'pass' || check.bucket === 'skipping') });
+  }
+  const mergeMatch = url.pathname.match(/^\/api\/tasks\/(TASK-[A-Za-z0-9-]+)\/merge$/);
+  if (request.method === 'POST' && mergeMatch) {
+    const task = ctx.tasks.get(mergeMatch[1]!);
+    const delivery = deliveryMetadata(task.metadata);
+    await new GitHubManager(delivery.integrationPath).mergeAfterHumanApproval(task.id, delivery.branch);
+    return json(response, 200, ctx.tasks.finish(task.id));
+  }
   json(response, 404, { error: 'not found' });
 }
 
@@ -115,4 +130,14 @@ function json(response: ServerResponse, status: number, value: unknown): void {
 function html(response: ServerResponse, value: string): void {
   response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'" });
   response.end(value);
+}
+
+function deliveryMetadata(metadata: Record<string, unknown>): { branch: string; integrationPath: string } {
+  const delivery = metadata['delivery'];
+  if (!delivery || typeof delivery !== 'object') throw new Error('Task has no GitHub delivery metadata.');
+  const value = delivery as Record<string, unknown>;
+  if (typeof value['branch'] !== 'string' || typeof value['integrationPath'] !== 'string') {
+    throw new Error('Task GitHub delivery metadata is incomplete.');
+  }
+  return { branch: value['branch'], integrationPath: value['integrationPath'] };
 }
