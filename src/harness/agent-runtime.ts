@@ -3,6 +3,7 @@ import type { HerdrAdapter, HerdrAgentKind } from './herdr-adapter.js';
 
 export interface HarnessAgentRequest {
   name: string;
+  runtimeKey?: string;
   kind: HerdrAgentKind;
   workingDirectory: string;
   prompt: string;

@@ -5,6 +5,7 @@ import { DagScheduler, type DagTask, type DagTaskSnapshot } from './dag-schedule
 export interface CodexWorkAssignment {
   task: DagTask;
   workerName: string;
+  runtimeKey: string;
   workingDirectory: string;
 }
 
@@ -36,18 +37,20 @@ export class CodexWorkerPool {
       await Promise.all(
         ready.map(async (task, index) => {
           const workerName = `codex-${index + 1}`;
+          const runtimeKey = `${workerName}-${task.id}`;
           scheduler.start(task.id, workerName);
           input.onUpdate?.(scheduler.snapshot());
           try {
             const workingDirectory = await input.resolveWorkingDirectory(task);
             await this.runtime.run({
               name: workerName,
+              runtimeKey,
               kind: 'codex',
               workingDirectory,
               timeoutMs: input.timeoutMs,
               prompt: buildCodexPrompt(task),
             });
-            await input.onTaskSucceeded?.({ task, workerName, workingDirectory });
+            await input.onTaskSucceeded?.({ task, workerName, runtimeKey, workingDirectory });
             scheduler.succeed(task.id);
           } catch (cause) {
             scheduler.fail(task.id, cause instanceof Error ? cause.message : String(cause));

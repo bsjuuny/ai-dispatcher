@@ -207,7 +207,7 @@ export class HarnessWorkflow {
           tasks.recordMetadata(taskId, { worktrees: [...subtaskWorktrees.values()] });
           return worktree.path;
         },
-        onTaskSucceeded: async ({ task: dagTask, workerName }) => {
+        onTaskSucceeded: async ({ task: dagTask, workerName, runtimeKey }) => {
           const worktree = subtaskWorktrees.get(dagTask.id);
           if (!worktree) throw new Error(`Missing worktree for ${dagTask.id}.`);
           let quality = await this.runSubtaskQuality(taskId, dagTask.id, worktree.path, 0);
@@ -217,6 +217,7 @@ export class HarnessWorkflow {
             tasks.recordMetadata(taskId, { subtaskRetryCount: Number(tasks.get(taskId).metadata['subtaskRetryCount'] ?? 0) + 1 });
             await runtime.run({
               name: workerName,
+              runtimeKey,
               kind: 'codex',
               workingDirectory: worktree.path,
               timeoutMs: minutes(config.timeouts.codex_minutes),

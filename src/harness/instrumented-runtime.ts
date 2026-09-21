@@ -26,7 +26,7 @@ export class InstrumentedAgentRuntime implements AgentRuntime {
     try {
       const result = await this.inner.run({
         ...request,
-        name: runtimeAgentName(this.projectRoot, this.taskId, request.name),
+        name: runtimeAgentName(this.projectRoot, this.taskId, request.runtimeKey ?? request.name),
         timeoutMs: Math.min(request.timeoutMs, remainingMs),
       });
       this.telemetry.finish(handle, {
@@ -50,7 +50,8 @@ export class InstrumentedAgentRuntime implements AgentRuntime {
 
 export function runtimeAgentName(projectRoot: string, taskId: string, logicalName: string): string {
   const project = createHash('sha256').update(projectRoot.toLowerCase()).digest('hex').slice(0, 6);
-  const task = taskId.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
-  const logical = logicalName.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
-  return `h${project}-${task}-${logical}`.slice(0, 32).replace(/-+$/g, '');
+  const task = taskId.toLowerCase().replace(/[^a-z0-9_-]/g, '-').slice(0, 8);
+  const logical = logicalName.toLowerCase().replace(/[^a-z0-9_-]/g, '-').slice(0, 7);
+  const suffix = createHash('sha256').update(logicalName).digest('hex').slice(0, 6);
+  return `h${project}-${task}-${logical}-${suffix}`.slice(0, 32).replace(/-+$/g, '');
 }

@@ -44,6 +44,8 @@ describe('CodexWorkerPool', () => {
     expect(result.maxParallelObserved).toBe(2);
     expect(runtime.maxActive).toBe(2);
     expect(runtime.calls[2]?.workingDirectory).toBe('C:/worktrees/T3');
+    expect(runtime.calls[0]?.runtimeKey).toBe('codex-1-T1');
+    expect(runtime.calls[2]?.runtimeKey).toBe('codex-1-T3');
   });
 
   it('marks dependents skipped when a worker fails', async () => {
