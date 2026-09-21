@@ -95,6 +95,15 @@ describe('HerdrAdapter', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it('redacts credential-shaped values before placing a prompt in process arguments', async () => {
+    const execute = vi.fn<ProcessExecutor>().mockResolvedValue(
+      outcome(JSON.stringify({ result: { agent: { name: 'codex-1', pane_id: 'w1:p2', state: 'done' } } })),
+    );
+    await adapter(execute).prompt('C:/repo', 'codex-1', 'Authorization: Bearer secret-value', 10_000);
+    expect(execute.mock.calls[0]![0].args).toContain('[REDACTED]');
+    expect(execute.mock.calls[0]![0].args.join(' ')).not.toContain('secret-value');
+  });
+
   it('maps CLI timeout and command errors to explicit harness errors', async () => {
     const timeout = adapter(vi.fn<ProcessExecutor>().mockResolvedValue(outcome('', { timedOut: true })));
     await expect(timeout.getAgent('C:/repo', 'codex-1')).rejects.toMatchObject({ code: 'HERDR_TIMEOUT' });

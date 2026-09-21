@@ -1,4 +1,5 @@
 import { DispatcherError } from '../models/error.js';
+import { scrubSecrets } from '../logging/redaction.js';
 import { runProcess, type ProcessOutcome, type ProcessPlan } from '../process/process-runner.js';
 
 export type HerdrAgentKind = 'claude' | 'codex';
@@ -115,7 +116,8 @@ export class HerdrAdapter {
   }
 
   async prompt(cwd: string, target: string, prompt: string, timeoutMs: number): Promise<HerdrAgentSnapshot> {
-    if (Buffer.byteLength(prompt, 'utf8') > 16 * 1024) {
+    const safePrompt = scrubSecrets(prompt);
+    if (Buffer.byteLength(safePrompt, 'utf8') > 16 * 1024) {
       throw new DispatcherError({
         code: 'HERDR_PROMPT_TOO_LARGE',
         message: 'Herdr CLI prompt exceeds the 16 KiB safe argv limit; reduce it to an artifact reference.',
@@ -123,7 +125,7 @@ export class HerdrAdapter {
       });
     }
     const response = await this.runJson<Record<string, unknown>>(
-      ['agent', 'prompt', target, prompt, '--wait', '--timeout', String(timeoutMs)],
+      ['agent', 'prompt', target, safePrompt, '--wait', '--timeout', String(timeoutMs)],
       cwd,
       { timeoutMs },
     );
