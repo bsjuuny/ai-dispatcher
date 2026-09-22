@@ -21,7 +21,7 @@ V4 adds the `harness` command and the **AI Development Control Center**. Respons
 ```bash
 pnpm install
 pnpm build
-pnpm link --global .
+pnpm add -g .          # pnpm 12+; on older pnpm use `pnpm link --global .`
 
 # In a separate terminal, create or attach the persistent runtime session.
 herdr --session ai-harness
@@ -149,16 +149,19 @@ node dist/cli.js doctor
 Or make `ai-dispatcher` available as a real command on PATH:
 
 ```bash
-pnpm link --global .   # from this project's directory - note the trailing `.`
+pnpm add -g .          # pnpm 12+, from this project's directory - note the trailing `.`
 ai-dispatcher doctor   # now works in any new shell
+harness doctor         # the `harness` command is registered the same way
 ```
+
+On pnpm 12 `pnpm link` no longer accepts `--global` (`error: unexpected argument '--global' found`); global registration moved to `pnpm add -g`. On older pnpm use `pnpm link --global .` instead. The global install is a symlink to this directory, so a later `pnpm build` takes effect without reinstalling.
 
 Two things this can hit on a machine where pnpm's global linking has never been used before (both verified live, in that order, on Windows):
 
-1. **`The configured global bin directory "..." is not in PATH`** — run `pnpm setup` once, then **open a brand new terminal window** (not just a new tab in an already-running terminal host, and not a shell restarted by a tool - env var changes from `pnpm setup` are written to the Windows registry and are only picked up by processes launched fresh afterward).
-2. **`Aborted removal of modules directory due to no TTY`** — `pnpm link --global` needs to reinstall `node_modules` into a layout suited for global linking, and pnpm wants interactive confirmation for that. Run `CI=true pnpm link --global .` once to answer non-interactively (safe: it just reinstalls the same lockfile-pinned dependencies, nothing is downgraded or changed). If a *later* `pnpm build`/`pnpm test` starts hitting the same "no TTY" error even without `--global`, that reinstall left `node_modules` in a state pnpm's own dependency-drift check doesn't like — one clean `CI=true pnpm install` resettles it, and normal commands go back to working without `CI=true` afterward.
+1. **`The configured global bin directory "..." is not in PATH`** (`ERR_PNPM_GLOBAL_BIN_DIR_NOT_IN_PATH`) — run `pnpm setup` once, then **open a brand new terminal window** (not just a new tab in an already-running terminal host, and not a shell restarted by a tool - env var changes from `pnpm setup` are written to the Windows registry and are only picked up by processes launched fresh afterward).
+2. **`Aborted removal of modules directory due to no TTY`** (older pnpm, with `pnpm link --global`) — `pnpm link --global` needs to reinstall `node_modules` into a layout suited for global linking, and pnpm wants interactive confirmation for that. Run `CI=true pnpm link --global .` once to answer non-interactively (safe: it just reinstalls the same lockfile-pinned dependencies, nothing is downgraded or changed). If a *later* `pnpm build`/`pnpm test` starts hitting the same "no TTY" error even without `--global`, that reinstall left `node_modules` in a state pnpm's own dependency-drift check doesn't like — one clean `CI=true pnpm install` resettles it, and normal commands go back to working without `CI=true` afterward.
 
-The rest of this README uses `ai-dispatcher <command>` as shorthand for whichever of the two you're using — substitute `node dist/cli.js` if you haven't linked it globally. To undo the global link: `pnpm unlink --global` (run from this project's directory).
+The rest of this README uses `ai-dispatcher <command>` as shorthand for whichever of the two you're using — substitute `node dist/cli.js` if you haven't linked it globally. To undo the global install: `pnpm remove -g ai-dispatcher` (pnpm 12+) or `pnpm unlink --global` from this project's directory (older pnpm).
 
 ## Provider authentication
 

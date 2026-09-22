@@ -50,16 +50,19 @@ node dist/cli.js doctor
 또는 `ai-dispatcher`를 PATH에 등록된 실제 명령으로 만들 수 있습니다:
 
 ```bash
-pnpm link --global .   # 이 프로젝트 디렉터리에서 - 끝의 `.`을 빼먹지 마세요
+pnpm add -g .          # pnpm 12+, 이 프로젝트 디렉터리에서 - 끝의 `.`을 빼먹지 마세요
 ai-dispatcher doctor   # 이제 새 셸이면 어디서든 동작합니다
+harness doctor         # `harness` 명령도 같은 방식으로 등록됩니다
 ```
+
+pnpm 12에서는 `pnpm link`가 `--global`을 받지 않습니다(`error: unexpected argument '--global' found`). 전역 등록은 `pnpm add -g`로 옮겨졌습니다. 그보다 오래된 pnpm에서는 `pnpm link --global .`을 쓰세요. 전역 설치는 이 디렉터리를 가리키는 심볼릭 링크라서, 이후 `pnpm build`만 하면 재설치 없이 바로 반영됩니다.
 
 이 머신에서 pnpm 전역 링크를 처음 쓰는 경우 겪을 수 있는 두 가지 문제(둘 다 Windows에서 실제로 라이브로 확인했고, 겪는 순서도 이대로입니다):
 
-1. **`The configured global bin directory "..." is not in PATH`** — `pnpm setup`을 한 번 실행한 뒤 **완전히 새로운 터미널 창**을 여세요(이미 열려 있던 터미널의 새 탭이 아니고, 도구가 재시작한 셸도 아닙니다 — `pnpm setup`의 환경변수 변경은 Windows 레지스트리에 기록되고, 그 이후에 새로 실행되는 프로세스만 이걸 읽습니다).
-2. **`Aborted removal of modules directory due to no TTY`** — `pnpm link --global`은 전역 링크에 맞는 구조로 `node_modules`를 재설치해야 하는데, 이때 pnpm이 대화형 확인을 요구합니다. `CI=true pnpm link --global .`을 한 번 실행해서 비대화형으로 답하세요(안전합니다 — lockfile에 고정된 동일한 의존성을 재설치할 뿐, 다운그레이드되거나 바뀌는 건 없습니다). 이후 `--global` 없이 실행한 `pnpm build`/`pnpm test`에서도 같은 "no TTY" 에러가 또 나오면, 그 재설치가 pnpm의 의존성-드리프트 검사가 싫어하는 상태로 `node_modules`를 남긴 겁니다 — `CI=true pnpm install`을 한 번 깨끗하게 돌리면 정리되고, 이후엔 `CI=true` 없이도 평소처럼 됩니다.
+1. **`The configured global bin directory "..." is not in PATH`**(`ERR_PNPM_GLOBAL_BIN_DIR_NOT_IN_PATH`) — `pnpm setup`을 한 번 실행한 뒤 **완전히 새로운 터미널 창**을 여세요(이미 열려 있던 터미널의 새 탭이 아니고, 도구가 재시작한 셸도 아닙니다 — `pnpm setup`의 환경변수 변경은 Windows 레지스트리에 기록되고, 그 이후에 새로 실행되는 프로세스만 이걸 읽습니다).
+2. **`Aborted removal of modules directory due to no TTY`**(오래된 pnpm에서 `pnpm link --global` 사용 시) — `pnpm link --global`은 전역 링크에 맞는 구조로 `node_modules`를 재설치해야 하는데, 이때 pnpm이 대화형 확인을 요구합니다. `CI=true pnpm link --global .`을 한 번 실행해서 비대화형으로 답하세요(안전합니다 — lockfile에 고정된 동일한 의존성을 재설치할 뿐, 다운그레이드되거나 바뀌는 건 없습니다). 이후 `--global` 없이 실행한 `pnpm build`/`pnpm test`에서도 같은 "no TTY" 에러가 또 나오면, 그 재설치가 pnpm의 의존성-드리프트 검사가 싫어하는 상태로 `node_modules`를 남긴 겁니다 — `CI=true pnpm install`을 한 번 깨끗하게 돌리면 정리되고, 이후엔 `CI=true` 없이도 평소처럼 됩니다.
 
-이 문서의 나머지 부분에서는 `ai-dispatcher <command>`를 둘 중 어느 쪽을 쓰든 상관없는 축약형으로 사용합니다 — 전역 링크를 안 하셨다면 `node dist/cli.js`로 바꿔 읽으세요. 전역 링크를 해제하려면: `pnpm unlink --global`(이 프로젝트 디렉터리에서 실행).
+이 문서의 나머지 부분에서는 `ai-dispatcher <command>`를 둘 중 어느 쪽을 쓰든 상관없는 축약형으로 사용합니다 — 전역 링크를 안 하셨다면 `node dist/cli.js`로 바꿔 읽으세요. 전역 설치를 해제하려면: `pnpm remove -g ai-dispatcher`(pnpm 12+) 또는 오래된 pnpm에서는 이 프로젝트 디렉터리에서 `pnpm unlink --global`.
 
 ## Provider 인증
 
