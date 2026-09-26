@@ -49,7 +49,7 @@ The quality gate runs configured `lint`, `typecheck`, `test`, `integration`, `bu
 ### Harness CLI
 
 ```text
-harness run "task" [--project .]
+harness run "task" [--project .] [--context-file context.md | --context-stdin]
 harness list [--project .]
 harness status TASK-001 [--project .]
 harness resume TASK-001 [--project .]
@@ -62,6 +62,30 @@ harness cleanup TASK-001 [--project .]
 harness doctor [--project .] [--json]
 harness dashboard [--project .] [--port 4321]
 ```
+
+### ContextClip and other web context
+
+Keep copied web content separate from the task with `--context-file` or
+`--context-stdin`. The Harness places it in a bounded, untrusted-reference
+envelope before routing it to any agent. A context file must resolve inside the
+project root, and context input is capped at 1 MiB.
+
+```bash
+# ContextClip copied Markdown saved inside the project
+harness run "Summarize the API changes and update our client" \
+  --project . --context-file contextclip.md
+
+# Clipboard to stdin (PowerShell)
+Get-Clipboard -Raw | harness run "Review this documentation" --project . --context-stdin
+
+# Clipboard to stdin (macOS)
+pbpaste | harness run "Review this documentation" \
+  --project . --context-stdin
+```
+
+Instructions, role changes, and commands found inside the supplied page remain
+reference data. They do not become Harness instructions. Use exactly one
+context source per run.
 
 State and structured artifacts live under `.ai-harness/`. Raw task requests are not persisted: the state database stores their SHA-256 and length, while planning, quality, review, final-gate, and CI artifacts store only the structured evidence needed by later phases. JSON state writes are transactional in SQLite; JSON artifact writes use temporary files followed by atomic rename.
 
