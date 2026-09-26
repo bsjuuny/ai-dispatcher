@@ -43,6 +43,9 @@ describe('buildHarnessRequirement', () => {
     expect(result.indexOf('Summarize the API changes')).toBeLessThan(
       result.indexOf('<<<BEGIN_UNTRUSTED_CONTEXT>>>'),
     );
+    expect(result.indexOf('Source label: pasted context')).toBeGreaterThan(
+      result.indexOf('<<<BEGIN_UNTRUSTED_CONTEXT>>>'),
+    );
   });
 
   it('reads a context file only when it is inside the project', async () => {
@@ -89,6 +92,34 @@ describe('buildHarnessRequirement', () => {
     ).rejects.toSatisfy(
       (error: unknown) => isDispatcherError(error) && error.code === 'TASK_INPUT_TOO_LARGE',
     );
+  });
+
+  it('stops reading stdin as soon as the byte limit is exceeded', async () => {
+    const chunks = ['1234', '56', 'should-not-be-read'];
+    let reads = 0;
+    const stdin = {
+      [Symbol.asyncIterator]() {
+        return {
+          async next() {
+            const value = chunks[reads];
+            reads += 1;
+            return value === undefined ? { done: true as const } : { done: false as const, value };
+          },
+        };
+      },
+    } as unknown as NodeJS.ReadableStream;
+
+    await expect(
+      buildHarnessRequirement('task', {
+        projectRoot: process.cwd(),
+        contextStdin: true,
+        stdin,
+        maxContextBytes: 5,
+      }),
+    ).rejects.toSatisfy(
+      (error: unknown) => isDispatcherError(error) && error.code === 'TASK_INPUT_TOO_LARGE',
+    );
+    expect(reads).toBe(2);
   });
 
   it('leaves an ordinary task unchanged when no context is provided', async () => {
