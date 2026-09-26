@@ -1,6 +1,6 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { rm } from 'node:fs/promises';
+import { realpath, rm } from 'node:fs/promises';
 import { runProcess } from '../process/process-runner.js';
 import { DispatcherError } from '../models/error.js';
 
@@ -51,7 +51,8 @@ export async function acquireWorkspace(realRepoDir: string, taskId: string): Pro
     });
   }
 
-  return { taskId, realRepoDir, worktreeDir, branchName, baseRevision };
+  const canonicalWorktreeDir = await realpath(worktreeDir);
+  return { taskId, realRepoDir, worktreeDir: canonicalWorktreeDir, branchName, baseRevision };
 }
 
 /**
