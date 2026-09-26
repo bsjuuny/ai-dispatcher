@@ -102,6 +102,29 @@ ai-dispatcher portable assemble <dir>  # USB용 오프라인 포터블 키트 �
 ai-dispatcher portable seal <dir>      # 자산 변경 후 검토된 키트 무결성 잠금 재생성
 ```
 
+### ContextClip 웹 자료를 Harness에 전달하기
+
+ContextClip으로 복사한 웹페이지는 작업 지시와 분리해서 전달합니다. Harness는 웹 자료를
+비신뢰 참고자료 영역에 넣은 뒤 에이전트에 전달합니다. 자료 안에 포함된 명령, 역할 변경,
+프롬프트는 작업 지시로 취급되지 않습니다. 파일은 프로젝트 내부에 있어야 하며 최대 크기는
+1 MiB입니다.
+
+```powershell
+# Windows PowerShell: ContextClip이 복사한 내용을 바로 전달
+Get-Clipboard -Raw | harness run "이 문서를 검토해줘" --project . --context-stdin
+```
+
+```bash
+# 프로젝트 안에 Markdown 파일로 저장한 경우
+harness run "API 변경점을 정리하고 클라이언트를 수정해줘" \
+  --project . --context-file contextclip.md
+
+# macOS 클립보드
+pbpaste | harness run "이 문서를 검토해줘" --project . --context-stdin
+```
+
+`--context-file`과 `--context-stdin`은 한 번에 하나만 사용합니다.
+
 디스패치 명령(`ask`/`analyze`/`review`/`fix`/`implement`)이 실행되는 동안, provider 선택·각 실행 시도 시작/종료·retry·fallback·검증·리뷰 같은 실시간 상태가 **stderr**로 그때그때 출력됩니다(stdout이 아니라서 `--json`의 기계 판독용 출력은 영향받지 않습니다). 실행 하나가 오래 걸리면 30초마다 "아직 `<provider>` 대기 중 (`Ns` 경과)" 하트비트도 함께 나옵니다. 예전에는 작업 전체가 끝날 때까지 터미널에 아무것도 안 찍혀서, 몇 분씩 걸리는 실행 중에 "정상 진행 중"과 "멈춤"을 구분할 방법이 없었습니다 — 실제로(2026-08-22) 11분 동안 아무 출력도 없이 멈춰있던 걸 겪고 나서 추가했습니다. 마지막에 사람이 읽기 좋은(또는 `--json`) 요약은 기존과 동일하게 출력됩니다.
 
 최종 요약에는 구조화된 **6하 원칙 결과 보고서**가 포함됩니다. 누가 작업을 조정·실행·검토했는지, 언제 어디서 실행했는지, 무엇을 변경했고 그 변경이 반영·정책상 미반영·폐기·작업 디렉터리 잔류 중 어느 상태인지, 왜 해당 provider를 선택했는지, 어떻게 실행·검증·리뷰를 마쳤는지를 함께 보여줍니다. 일반 출력에는 `누가`, `언제`, `어디서`, `무엇을`, `왜`, `어떻게`로 표시하고, `--json`에서는 동일한 정보를 `resultReport`로 제공합니다. 시크릿을 마스킹한 보고서는 `task.report.created` 감사 이벤트로도 보존됩니다.
