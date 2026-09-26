@@ -6,6 +6,7 @@ import { startDashboard } from './dashboard-server.js';
 import { HarnessGitManager, projectWorktreeRoot, type SubtaskWorktree, type TaskWorktrees } from './git-manager.js';
 import { HarnessTaskLog } from './task-log.js';
 import { runHarnessDoctor } from './doctor.js';
+import { buildHarnessRequirement } from './context-input.js';
 
 const program = new Command();
 program.name('harness').description('Resumable AI Development Control Center.');
@@ -13,10 +14,18 @@ program.name('harness').description('Resumable AI Development Control Center.');
 program
   .command('run <task>')
   .option('--project <path>', 'Project root', '.')
+  .option('--context-file <path>', 'Read untrusted reference context from a project file')
+  .option('--context-stdin', 'Read untrusted reference context from stdin')
   .option('--json', 'Output JSON')
   .action(async (request: string, options) => {
-    const ctx = createHarnessContext(resolve(options.project));
-    const task = await ctx.workflow.start(request);
+    const projectRoot = resolve(options.project);
+    const ctx = createHarnessContext(projectRoot);
+    const requirement = await buildHarnessRequirement(request, {
+      projectRoot,
+      contextFile: options.contextFile,
+      contextStdin: Boolean(options.contextStdin),
+    });
+    const task = await ctx.workflow.start(requirement);
     print(task, Boolean(options.json));
   });
 
