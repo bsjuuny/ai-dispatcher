@@ -20,8 +20,12 @@ afterEach(() => {
 describe('preflight git detection', () => {
   it('reports git as available from the bundled runtime/git/cmd copy, even with an empty PATH', () => {
     const root = tempRoot();
-    mkdirSync(join(root, 'runtime', 'git', 'cmd'), { recursive: true });
-    writeFileSync(join(root, 'runtime', 'git', 'cmd', 'git.exe'), 'fake-git');
+    const bundledDirectory = process.platform === 'win32'
+      ? join(root, 'runtime', 'git', 'cmd')
+      : join(root, 'runtime', 'git', 'bin');
+    const bundledExecutable = process.platform === 'win32' ? 'git.exe' : 'git';
+    mkdirSync(bundledDirectory, { recursive: true });
+    writeFileSync(join(bundledDirectory, bundledExecutable), 'fake-git');
     const config = parseConfig({});
 
     const originalPath = process.env['PATH'];
@@ -53,7 +57,7 @@ describe('preflight git detection', () => {
     const root = tempRoot();
     const fakePathDir = join(root, 'fake-system-path');
     mkdirSync(fakePathDir, { recursive: true });
-    writeFileSync(join(fakePathDir, 'git.exe'), 'fake-git');
+    writeFileSync(join(fakePathDir, process.platform === 'win32' ? 'git.exe' : 'git'), 'fake-git');
     const config = parseConfig({});
 
     const originalPath = process.env['PATH'];

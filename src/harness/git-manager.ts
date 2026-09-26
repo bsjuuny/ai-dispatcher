@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { resolve, sep } from 'node:path';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { DispatcherError } from '../models/error.js';
 import { runProcess } from '../process/process-runner.js';
 import type { ProcessExecutor } from './herdr-adapter.js';
@@ -262,7 +262,14 @@ function normalizeRepoPath(path: string): string {
 }
 
 function normalizePath(path: string): string {
-  return resolve(path).replace(/\\/g, '/').toLowerCase();
+  let normalized: string;
+  try {
+    normalized = realpathSync.native(path);
+  } catch {
+    normalized = resolve(path);
+  }
+  normalized = normalized.replace(/\\/g, '/');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
 function isTestFile(path: string): boolean {
