@@ -118,6 +118,7 @@ export async function runProcess(plan: ProcessPlan): Promise<ProcessOutcome> {
   let lastActivityAt: string | undefined;
   let treeTermination: ProcessOutcome['treeTermination'];
   let treeTerminationMessage: string | undefined;
+  let terminationPromise: Promise<void> | undefined;
 
   try {
     const subprocess = execa(plan.file, plan.args, {
@@ -143,7 +144,7 @@ export async function runProcess(plan: ProcessPlan): Promise<ProcessOutcome> {
       if (timeoutReason) return;
       timeoutReason = reason;
       if (idleTimer) clearTimeout(idleTimer);
-      void terminateProcessTree(subprocess.pid, () => subprocess.kill('SIGKILL')).then((result) => {
+      terminationPromise = terminateProcessTree(subprocess.pid, () => subprocess.kill('SIGKILL')).then((result) => {
         treeTermination = result.succeeded ? 'succeeded' : 'fallback';
         treeTerminationMessage = result.message;
       }).finally(() => {
@@ -183,6 +184,7 @@ export async function runProcess(plan: ProcessPlan): Promise<ProcessOutcome> {
     hardTimer.unref();
 
     const result = await subprocess;
+    await terminationPromise;
 
     return {
       exitCode: result.exitCode ?? null,
